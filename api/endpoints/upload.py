@@ -1,12 +1,11 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException,Request,Response
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.utils import (save_file, save_base64_image, get_or_create_task, save_image_to_db,
-                        find_free_task_id, set_task_id_in_cookies,save_image_to_db_v1,find_first_free_task_id,
+                        find_free_task_id, set_task_id_in_cookies, save_image_to_db_v1, find_first_free_task_id,
                         get_next_image_by_task_id)
 from schemas import ImageBase64Schema
 from api.dependencies import get_session
-from task import  process_image_task
-
+from task import process_image_task
 
 router = APIRouter()
 
@@ -17,13 +16,17 @@ async def upload_image(task_id: int = None, file: UploadFile = File(...), sessio
     await save_image_to_db(session, task_id, file_path)
     return {"message": "Image uploaded successfully", "file_path": file_path}
 """
+
+
 @router.post("/upload_images")
-async def upload_images(task_id: int = None, files: list[UploadFile] = File(...), session: AsyncSession = Depends(get_session)):
+async def upload_images(task_id: int = None, files: list[UploadFile] = File(...),
+                        session: AsyncSession = Depends(get_session)):
     task_id = await get_or_create_task(session, task_id)
     for file in files:
-        file_path = await save_file(file)
+        file_path = await save_file(file)  # обработа json объекта
         await save_image_to_db(session, task_id, file_path)
     return {"message": "Images uploaded successfully"}
+
 
 """@router.post("/upload_images_base64")
 async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = Depends(get_session)):
@@ -33,6 +36,8 @@ async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = 
         await save_image_to_db(session, task_id, file_path)
     return {"message": "Images uploaded successfully", "task_id": task_id}
 """
+
+
 @router.post("/upload_images_base64")
 async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = Depends(get_session)):
     task_id = await get_or_create_task(session, data.task_id)
@@ -58,6 +63,7 @@ async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = 
 async def get_first_free_task_id(session: AsyncSession = Depends(get_session)):
     free_task_id = await find_first_free_task_id(session)
     return {"first_free_task_id": free_task_id}
+
 
 @router.get("/free_task_id")
 async def get_first_free_task_id(session: AsyncSession = Depends(get_session)):
@@ -112,6 +118,7 @@ async def process_images(task_id: int, session: AsyncSession = Depends(get_sessi
             break
 
         # Отправляем изображение в очередь Celery для обработки
+        # chain
         task = process_image_task.apply_async(args=[image.id])
         print(f"Image {image.id} processing task id: {task.id}")
 

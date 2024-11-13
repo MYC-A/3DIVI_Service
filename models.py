@@ -1,5 +1,7 @@
+from termios import CIBAUD
+
 from sqlalchemy import Column, Integer, String, ForeignKey,JSON
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, Relationship
 from database import Base
 
 class Task(Base):
@@ -16,3 +18,12 @@ class ImageData(Base):
     additional_data = Column(JSON)           # поле JSON для хранения произвольных данных
 
     task = relationship("Task", back_populates="images")
+
+class DetectionData(Base):
+    __tablename__ = "detection"
+    id = Column(Integer, primary_key=True, index=True)
+    image_id = Column(Integer, ForeignKey("images.id"))
+    detection = Column(JSON)
+    template = Column(JSON)
+
+

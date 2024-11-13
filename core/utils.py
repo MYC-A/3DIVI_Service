@@ -4,9 +4,11 @@ from typing import Optional
 
 from fastapi import Request, Response
 from uuid import uuid4
+
+from api.dependencies import get_session
 from core.config import UPLOAD_DIR
 from sqlalchemy.ext.asyncio import AsyncSession
-from models import Task, ImageData
+from models import Task, ImageData, DetectionData
 from sqlalchemy.future import select
 from typing import List, Optional, Dict, Any
 
@@ -61,6 +63,15 @@ async def save_image_to_db_v1(session: AsyncSession, task_id: int, file_path: st
     session.add(new_image)
     await session.commit()
 
+async def save_detection(image_id : int, detection):
+    session = get_session()
+    new_image = DetectionData(
+        image_id=image_id,
+        detection=detection,
+        template=None,
+    )
+    session.add(new_image)
+    await session.commit()
 
 async def find_first_free_task_id(session: AsyncSession) -> int:
     # Извлекаем все существующие task_id из таблицы

@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/raw_data"
 
-async_engine = create_async_engine(DATABASE_URL, echo=False)
+async_engine = create_async_engine(DATABASE_URL, echo=True)
 Base = declarative_base()
 async_session = sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 
