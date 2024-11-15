@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.utils import (save_file, save_base64_image, get_or_create_task, save_image_to_db,
@@ -5,8 +7,10 @@ from core.utils import (save_file, save_base64_image, get_or_create_task, save_i
                         get_next_image_by_task_id)
 from schemas import ImageBase64Schema
 from api.dependencies import get_session
-from task import process_image_task
+from task import *
+from dotenv import load_dotenv
 
+load_dotenv()
 router = APIRouter()
 
 """@router.post("/upload_image")
@@ -102,7 +106,6 @@ async def upload_images_base64_0_1(data: ImageBase64Schema, request: Request, re
 
 @router.post("/process_images")
 async def process_images(task_id: int, session: AsyncSession = Depends(get_session)):
-    print(1)
     """
     Извлекает изображения поштучно из БД по task_id и отправляет их в очередь RabbitMQ для обработки.
     """
@@ -118,8 +121,14 @@ async def process_images(task_id: int, session: AsyncSession = Depends(get_sessi
             break
 
         # Отправляем изображение в очередь Celery для обработки
-        # chain
-        task = process_image_task.apply_async(args=[image.id])
+
+        image_api_url = os.getenv("image_api_detection_url")
+        if not image.additional_data: # если есть метаданные, то пушим таску
+            task = process_detection_task.\
+                apply_async(args=[image.id, image.image_path, image_api_url])
+        else:
+            await save_detection(image_id=image.id, detection=image.additional_data)
+
         print(f"Image {image.id} processing task id: {task.id}")
 
         # Обновляем последний обработанный id
