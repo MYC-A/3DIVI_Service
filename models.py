@@ -1,7 +1,5 @@
-from termios import CIBAUD
-
 from sqlalchemy import Column, Integer, String, ForeignKey,JSON
-from sqlalchemy.orm import relationship, Relationship
+from sqlalchemy.orm import relationship
 from database import Base
 
 class Task(Base):
@@ -25,5 +23,3 @@ class DetectionData(Base):
     image_id = Column(Integer, ForeignKey("images.id"))
     detection = Column(JSON)
     template = Column(JSON)
-
-

@@ -124,3 +124,22 @@ async def get_next_image_by_task_id(session: AsyncSession, task_id: int, last_pr
 
     result = await session.execute(query)
     return result.scalar_one_or_none()  # Возвращаем одно изображение или None, если изображений больше нет
+
+
+
+async def get_all_images_by_task_id(session: AsyncSession, task_id: int):
+    """
+    Получает все изображения для указанного task_id.
+    """
+    query = select(ImageData).filter(ImageData.task_id == task_id).order_by(ImageData.id)
+    result = await session.execute(query)
+    return result.scalars().all()
+async def save_detection(image_id : int, detection):
+    session = get_session()
+    new_image = DetectionData(
+        image_id=image_id,
+        detection=detection,
+        template=None,
+    )
+    session.add(new_image)
+    await session.commit()

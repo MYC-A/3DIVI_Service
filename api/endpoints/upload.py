@@ -1,16 +1,14 @@
 import os
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException,Request,Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.utils import (save_file, save_base64_image, get_or_create_task, save_image_to_db,
                         find_free_task_id, set_task_id_in_cookies, save_image_to_db_v1, find_first_free_task_id,
-                        get_next_image_by_task_id)
+                        get_next_image_by_task_id, save_detection)
 from schemas import ImageBase64Schema
 from api.dependencies import get_session
-from task import *
-from dotenv import load_dotenv
+from task import process_image_task  # process_detection_task
 
-load_dotenv()
 router = APIRouter()
 
 """@router.post("/upload_image")
@@ -20,17 +18,13 @@ async def upload_image(task_id: int = None, file: UploadFile = File(...), sessio
     await save_image_to_db(session, task_id, file_path)
     return {"message": "Image uploaded successfully", "file_path": file_path}
 """
-
-
 @router.post("/upload_images")
-async def upload_images(task_id: int = None, files: list[UploadFile] = File(...),
-                        session: AsyncSession = Depends(get_session)):
+async def upload_images(task_id: int = None, files: list[UploadFile] = File(...), session: AsyncSession = Depends(get_session)):
     task_id = await get_or_create_task(session, task_id)
     for file in files:
-        file_path = await save_file(file)  # обработа json объекта
+        file_path = await save_file(file)
         await save_image_to_db(session, task_id, file_path)
     return {"message": "Images uploaded successfully"}
-
 
 """@router.post("/upload_images_base64")
 async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = Depends(get_session)):
@@ -40,8 +34,6 @@ async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = 
         await save_image_to_db(session, task_id, file_path)
     return {"message": "Images uploaded successfully", "task_id": task_id}
 """
-
-
 @router.post("/upload_images_base64")
 async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = Depends(get_session)):
     task_id = await get_or_create_task(session, data.task_id)
@@ -67,7 +59,6 @@ async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = 
 async def get_first_free_task_id(session: AsyncSession = Depends(get_session)):
     free_task_id = await find_first_free_task_id(session)
     return {"first_free_task_id": free_task_id}
-
 
 @router.get("/free_task_id")
 async def get_first_free_task_id(session: AsyncSession = Depends(get_session)):
@@ -105,37 +96,12 @@ async def upload_images_base64_0_1(data: ImageBase64Schema, request: Request, re
 
 
 @router.post("/process_images")
-async def process_images(task_id: int, session: AsyncSession = Depends(get_session)):
+async def process_images(task_id: int):
     """
-    Извлекает изображения поштучно из БД по task_id и отправляет их в очередь RabbitMQ для обработки.
+    Метод API для запуска задачи обработки изображений.
     """
-    processed_images_count = 0
-    last_processed_id = None  # Инициализируем переменную для отслеживания последнего обработанного id
+    # Запуск задачи Celery
+    task = process_image_task.apply_async(args=[task_id])
+    return {"message": f"Processing task started for task_id: {task_id}", "celery_task_id": task.id}
 
-    while True:
-        # Извлекаем следующее изображение по task_id, начиная с last_processed_id
-        image = await get_next_image_by_task_id(session, task_id, last_processed_id)
 
-        if image is None:
-            # Если больше нет изображений, завершаем цикл
-            break
-
-        # Отправляем изображение в очередь Celery для обработки
-
-        image_api_url = os.getenv("image_api_detection_url")
-        if not image.additional_data: # если есть метаданные, то пушим таску
-            task = process_detection_task.\
-                apply_async(args=[image.id, image.image_path, image_api_url])
-        else:
-            await save_detection(image_id=image.id, detection=image.additional_data)
-
-        print(f"Image {image.id} processing task id: {task.id}")
-
-        # Обновляем последний обработанный id
-        last_processed_id = image.id
-        processed_images_count += 1
-
-    if processed_images_count == 0:
-        raise HTTPException(status_code=404, detail="No images found for this task_id")
-
-    return {"message": f"{processed_images_count} images sent to processing queue", "task_id": task_id}
