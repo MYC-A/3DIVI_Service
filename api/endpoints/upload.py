@@ -7,7 +7,7 @@ from core.utils import (save_file, save_base64_image, get_or_create_task, save_i
                         get_next_image_by_task_id, save_detection)
 from schemas import ImageBase64Schema
 from api.dependencies import get_session
-from task import summon_images_task  # process_detection_task
+from task import summon_images_task, celery_summon_images_detection_task  # process_detection_task
 
 router = APIRouter()
 
@@ -102,7 +102,7 @@ async def process_images(task_id: int):
     """
 
     # Запуск задач Celery
-    res = await summon_images_task(task_id)
-    return {"message": f"Processing task started for task_id: {task_id}", "result": res['message']}
+    task = celery_summon_images_detection_task.apply_async(args=[task_id])
+    return {"message": f"Processing task started for task_id: {task_id}", "celery_task_id": task.id}
 
 
