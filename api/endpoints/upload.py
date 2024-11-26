@@ -4,10 +4,10 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException,Request,
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.utils import (save_file, save_base64_image, get_or_create_task, save_image_to_db,
                         find_free_task_id, set_task_id_in_cookies, save_image_to_db_v1, find_first_free_task_id,
-                        get_next_image_by_task_id, save_detection)
+                        get_next_image_by_task_id)
 from schemas import ImageBase64Schema
 from api.dependencies import get_session
-from task import summon_images_task, celery_summon_images_detection_task  # process_detection_task
+from task import summon_images_task, update_task_status, celery_summon_images_detection_task  # process_detection_task
 
 router = APIRouter()
 
@@ -102,7 +102,8 @@ async def process_images(task_id: int):
     """
 
     # Запуск задач Celery
-    task = celery_summon_images_detection_task.apply_async(args=[task_id])
-    return {"message": f"Processing task started for task_id: {task_id}", "celery_task_id": task.id}
+    await update_task_status(task_id, 'pending')
+    # task = celery_summon_images_detection_task.apply_async(args=[task_id])
+    return {"message": f"Processing task started for task_id: {task_id}"} #, "celery_task_id": task.id}
 
 
