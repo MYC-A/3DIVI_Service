@@ -116,6 +116,36 @@ async def get_next_image_by_task_id(session: AsyncSession, task_id: int, last_pr
     result = await session.execute(query)
     return result.scalar_one_or_none()  # Возвращаем одно изображение или None, если изображений больше нет
 
+def sync_get_next_image_by_task_id(connection, task_id: int, last_processed_id: int = None):
+    """
+    Получает следующее изображение с данным task_id, которое идет после last_processed_id.
+    """
+    try:
+        cursor = connection.cursor()
+
+        query = """
+            SELECT id, image_path, additional_data
+            FROM images
+            WHERE task_id = %s
+        """
+
+        params = [task_id]
+        if last_processed_id is not None:
+            query += " AND id > %s"
+            params.append(last_processed_id)
+
+        query += " ORDER BY id LIMIT 1"
+
+        cursor.execute(query, params)
+
+        result = cursor.fetchone()
+        cursor.close()
+
+        return result
+
+    except Exception as ex:
+        print(f"Error while fetching next image for task_id {task_id}: {ex}")
+        return None
 
 
 async def get_all_images_by_task_id(session: AsyncSession, task_id: int):

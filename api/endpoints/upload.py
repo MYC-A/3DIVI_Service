@@ -102,7 +102,7 @@ async def process_images(task_id: int):
     """
 
     # Запуск задач Celery
-    await update_task_status(task_id, 'pending')
+    update_task_status(task_id, 'pending')
     # task = celery_summon_images_detection_task.apply_async(args=[task_id])
     return {"message": f"Processing task started for task_id: {task_id}"} #, "celery_task_id": task.id}
 
