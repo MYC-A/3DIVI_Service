@@ -11,6 +11,7 @@ class Task(Base):
     status = Column(String, index=True, default='not_requested')
     timestamp_of_request = Column(DateTime, index=True, default=datetime.utcnow)
 
+
 class ImageData(Base):
     __tablename__ = "images"
     id = Column(Integer, primary_key=True, index=True)

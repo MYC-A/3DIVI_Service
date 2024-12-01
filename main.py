@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.include_router(upload.router)
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Разрешает запросы от всех источников

@@ -10,6 +10,7 @@ async_session = sessionmaker(async_engine, expire_on_commit=False, class_=AsyncS
 async def get_async_session() -> AsyncSession:
     return async_session()
 
+
 async def connect():
     async with async_engine.connect() as connection:
         await connection.begin()

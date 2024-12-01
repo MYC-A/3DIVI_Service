@@ -6,3 +6,4 @@ class ImageBase64Schema(BaseModel):
     task_id: Optional[int] = None
     images: List[Dict[str, Any]]  # Каждое изображение содержит base64 и дополнительные метаданные
 
+

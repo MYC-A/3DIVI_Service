@@ -33,6 +33,7 @@ app.conf.task_queues = (
     Queue('queue_controller'),
 )
 
+
 app.conf.task_routes = {
     'tasks.detection.*': {'queue': 'queue_detection'},
     'tasks.template.*': {'queue': 'queue_template'},

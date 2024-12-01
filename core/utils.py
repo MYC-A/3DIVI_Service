@@ -123,6 +123,7 @@ def sync_get_next_image_by_task_id(connection, task_id: int, last_processed_id: 
     try:
         cursor = connection.cursor()
 
+
         query = """
             SELECT id, image_path, additional_data
             FROM images
