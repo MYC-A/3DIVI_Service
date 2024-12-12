@@ -10,6 +10,12 @@ import task
 # celery -A celery_app worker --loglevel=info --queues=queue_template --concurrency=3
 # celery -A celery_app worker --loglevel=info --queues=queue_quality --concurrency=2
 # celery -A celery_app worker --loglevel=info --queues=queue_controller --concurrency=1
+#
+# =============================================
+# MINIO DOCKER :
+# docker run -d --name minio -p 9000:9000 -p 9090:9090 -e "MINIO_ROOT_USER=minioadmin" -e "MINIO_ROOT_PASSWORD=minioadmin" quay.io/minio/minio server /data --console-address ":9090"
+# =============================================
+#
 # ======================================================================================================================
 
 

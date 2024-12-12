@@ -1,39 +1,50 @@
-import os
-
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException,Request,Response
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.utils import (save_file, save_base64_image, get_or_create_task, save_image_to_db,
-                        find_free_task_id, set_task_id_in_cookies, save_image_to_db_v1, find_first_free_task_id,
-                        get_next_image_by_task_id)
+                        find_free_task_id, save_image_to_db_v1, find_first_free_task_id)
 from schemas import ImageBase64Schema
 from api.dependencies import get_session
-from task import summon_images_task, update_task_status, celery_summon_images_detection_task  # process_detection_task
-
+from task import update_task_status
+from uuid import uuid4
+from dotenv import load_dotenv
+import os
+import aiofiles
+from minio import Minio
 router = APIRouter()
 
-"""@router.post("/upload_image")
-async def upload_image(task_id: int = None, file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
-    task_id = await get_or_create_task(session, task_id)
-    file_path = await save_file(file)
-    await save_image_to_db(session, task_id, file_path)
-    return {"message": "Image uploaded successfully", "file_path": file_path}
-"""
+load_dotenv()
+
+minio_client = Minio(
+    os.getenv("MINIO_ENDPOINT"),
+    access_key=os.getenv("MINIO_ACCESS_KEY"),
+    secret_key=os.getenv("MINIO_SECRET_KEY"),
+    secure=False
+)
+
+bucket_name = os.getenv("MINIO_BUCKET_NAME")
+if not minio_client.bucket_exists(bucket_name):
+    minio_client.make_bucket(bucket_name)
+
+
+async def save_uploaded_file(upload_file: UploadFile, destination: str):
+    # временное сохранение файла
+    async with aiofiles.open(destination, "wb") as out_file:
+        while content := await upload_file.read(1024):
+            await out_file.write(content)
+
 @router.post("/upload_images")
 async def upload_images(task_id: int = None, files: list[UploadFile] = File(...), session: AsyncSession = Depends(get_session)):
     task_id = await get_or_create_task(session, task_id)
+
     for file in files:
-        file_path = await save_file(file)
-        await save_image_to_db(session, task_id, file_path)
+        file_name = f"{uuid4()}_{file.filename}"
+        temp_path = os.path.join("/tmp", file_name)
+        await save_uploaded_file(file, temp_path)
+        await save_image_to_db(session, task_id, temp_path, minio_client, bucket_name)
+        os.remove(temp_path)
+
     return {"message": "Images uploaded successfully"}
 
-"""@router.post("/upload_images_base64")
-async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = Depends(get_session)):
-    task_id = await get_or_create_task(session, data.task_id)
-    for base64_image in data.images:
-        file_path = await save_base64_image(base64_image)
-        await save_image_to_db(session, task_id, file_path)
-    return {"message": "Images uploaded successfully", "task_id": task_id}
-"""
 @router.post("/upload_images_base64")
 async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = Depends(get_session)):
     task_id = await get_or_create_task(session, data.task_id)
@@ -64,36 +75,6 @@ async def get_first_free_task_id(session: AsyncSession = Depends(get_session)):
 async def get_first_free_task_id(session: AsyncSession = Depends(get_session)):
     free_task_id = await find_free_task_id(session)
     return {"free_task_id": free_task_id}
-
-
-"""
-@router.post("/upload_images_base64_0_1")
-async def upload_images_base64_0_1(data: ImageBase64Schema, request: Request, response: Response, session: AsyncSession = Depends(get_session)):
-    task_id = get_task_id_from_cookies(request)  # Получаем task_id из cookies
-
-    # Если task_id нет в cookies и last_part=True, создаем новую задачу
-    if not task_id and data.last_part:
-        task_id = await get_or_create_task(session)
-        set_task_id_in_cookies(response, task_id)  # Сохраняем task_id в cookies
-
-    # Если task_id передан в запросе, используем его
-    elif data.task_id:
-        task_id = data.task_id
-        set_task_id_in_cookies(response, task_id)  # Сохраняем task_id в cookies
-
-    # Если last_part=False, добавляем изображения в текущую задачу
-    for base64_image in data.images:
-        file_path = await save_base64_image(base64_image)
-        await save_image_to_db(session, task_id, file_path)
-
-    # Если last_part=False, начинаем новый цикл
-    if not data.last_part:
-        task_id = await get_or_create_task(session)
-        set_task_id_in_cookies(response, task_id)  # Сохраняем новый task_id в cookies
-
-    return {"message": "Images uploaded successfully", "task_id": task_id}
-"""
-
 
 
 @router.post("/process_images")

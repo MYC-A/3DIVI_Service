@@ -3,20 +3,12 @@ import json
 import base64
 import logging
 import requests
-import psycopg2
-from celery.bin.control import status
-from psycopg2 import pool
+from minio import Minio
 from celery import Celery
 from kombu import Connection
+from sqlalchemy import update
 from dotenv import load_dotenv
-from sqlalchemy.sql import text
-
-from psycopg2 import sql
-from psycopg2.extras import RealDictCursor
-from sqlalchemy import update, and_
-
 from celery_db import sync_session
-from core.utils import sync_get_next_image_by_task_id
 from models import Task, ImageData
 
 # Инициализация объекта Celery
@@ -27,14 +19,23 @@ logger.setLevel(logging.INFO)
 
 load_dotenv()
 
-# берем данные БД из .env файлика
+minio_client = Minio(
+    os.getenv("MINIO_ENDPOINT"),
+    access_key=os.getenv("MINIO_ACCESS_KEY"),
+    secret_key=os.getenv("MINIO_SECRET_KEY"),
+    secure=False
+)
 
-username=os.getenv('db_username')
-password=os.getenv('db_password')
-host=os.getenv('db_host')
-db_port=os.getenv('db_port')
-db_name=os.getenv('db_name')
-port=os.getenv('db_port')
+bucket_name = os.getenv("MINIO_BUCKET_NAME")
+if not minio_client.bucket_exists(bucket_name):
+    minio_client.make_bucket(bucket_name)
+
+
+def get_base64_from_path(img_path):
+    response = minio_client.get_object(bucket_name, img_path)
+    data = response.read()
+    return base64.b64encode(data).decode("utf-8")
+
 
 # Вместо работы с пулом подключений - работаем с сессиями
 @celery_app.task(name='task.controller.controller')
@@ -117,8 +118,10 @@ def summon_images_task(task_id: int, api_stage: str):
             img_path = image.image_path
             img_additional_data = image.additional_data
 
-            logger.info(f"Retrieved next image of task {task_id}; {processed_images_count if processed_images_count else 0}")
-            logger.info(f"img_id: {img_id}\nimg_additional_data: {type(img_additional_data), len(str(img_additional_data))}")
+            logger.info(
+                f"Retrieved next image of task {task_id}; {processed_images_count if processed_images_count else 0}")
+            logger.info(
+                f"img_id: {img_id}\nimg_additional_data: {type(img_additional_data), len(str(img_additional_data))}")
 
             # В зависимости от стадии, выбираем соответствующий API
             if api_stage == 'detection':
@@ -126,13 +129,16 @@ def summon_images_task(task_id: int, api_stage: str):
                 process_image_detection_task.apply_async(args=[img_id, img_path, img_additional_data, api_url],
                                                          queue='queue_detection')
             elif api_stage == 'template':
-                api_url = os.getenv('image_api_template_url')
-                process_template_extraction_task.apply_async(
-                    args=[img_id, img_path, img_additional_data, api_url], queue='queue_template')
+                if img_additional_data:
+                    api_url = os.getenv('image_api_template_url')
+                    process_template_extraction_task.apply_async(
+                        args=[img_id, img_path, img_additional_data, api_url], queue='queue_template')
+
             elif api_stage == 'quality':
-                api_url = os.getenv('image_api_quality_url')
-                process_quality_estimation_task.apply_async(
-                    args=[img_id, img_path, img_additional_data, api_url], queue='queue_quality')
+                if img_additional_data:
+                    api_url = os.getenv('image_api_quality_url')
+                    process_quality_estimation_task.apply_async(
+                        args=[img_id, img_path, img_additional_data, api_url], queue='queue_quality')
 
             # Обновляем последний обработанный ID
             last_processed_id = img_id
@@ -154,23 +160,21 @@ def process_image_detection_task(img_id, img_path, img_additional_data, api_url:
         logger.info("Запрос на api_url %s", api_url)
         logger.info("Путь к изображению: %s", img_path)
 
-        with open(img_path, "rb") as file:
-            img = file.read()
-
-        image_data = base64.b64encode(img).decode("utf-8")
+        image_data = get_base64_from_path(img_path)
 
         if not image_data:
             logger.error("Base64-данные изображения не были сформированы.")
             raise ValueError("Base64-данные изображения не были сформированы.")
 
-        #logger.info("Дополнительные данные изображения: %s", img_additional_data)
+        # logger.info("Дополнительные данные изображения: %s", img_additional_data)
+        logger.info(f"{str(img_additional_data)[:50]}, {type(img_additional_data)}")
 
         payload = {
             "image": {
                 "blob": image_data,
                 "format": "IMAGE",
             },
-            "objects": img_additional_data if img_additional_data else [{}],
+            "objects": [{}],
         }
 
         headers = {
@@ -184,6 +188,8 @@ def process_image_detection_task(img_id, img_path, img_additional_data, api_url:
 
         api_result = response.json()
         logger.info("Ответ API успешно получен")
+
+        logger.info(f"{str(api_result)[:50], type(api_result)}, {api_result['objects']}")
 
         detection_data = api_result.get("objects", [])
         image = session.query(ImageData).filter_by(id=img_id).first()
@@ -202,30 +208,6 @@ def process_image_detection_task(img_id, img_path, img_additional_data, api_url:
     return f"Детекция изображения {img_id} получена успешно"
 
 
-def update_task_status(task_id: int, task_status: str):
-    allowed_statuses = [
-        'not_requested', 'pending', 'image_detection_started',
-        'template_extraction_started', 'quality_estimation_started', 'done'
-    ]
-
-    if task_status not in allowed_statuses:
-        raise ValueError(f"Invalid status: {task_status}, allowed ones are {allowed_statuses}")
-
-    session = sync_session()
-
-    try:
-        # ORM-based update
-        stmt = update(Task).where(Task.id == task_id).values(status=task_status)
-        session.execute(stmt)
-        session.commit()
-        logger.debug(f'Successfully updated task id={task_id} to status={task_status}')
-    except Exception as ex:
-        logger.debug(f'Exception in update_task_status: {ex}')
-        session.rollback()
-    finally:
-        session.close()
-
-
 @celery_app.task(name='tasks.template.process_template', acks_late=True)
 def process_template_extraction_task(img_id, img_path, img_additional_data, api_url: str):
     session = sync_session()
@@ -234,16 +216,14 @@ def process_template_extraction_task(img_id, img_path, img_additional_data, api_
         logger.info("Запрос на api_url %s", api_url)
         logger.info("Путь к изображению: %s", img_path)
 
-        with open(img_path, "rb") as file:
-            img = file.read()
-
-        image_data = base64.b64encode(img).decode("utf-8")
+        image_data = get_base64_from_path(img_path)
 
         if not image_data:
             logger.error("Base64-данные изображения не были сформированы.")
             raise ValueError("Base64-данные изображения не были сформированы.")
 
-        #logger.info("Дополнительные данные изображения: %s", img_additional_data)
+        # logger.info("Дополнительные данные изображения: %s", img_additional_data)
+        logger.info(f"{str(img_additional_data)[:50]}, {type(img_additional_data)}")
 
         payload = {
             "image": {
@@ -263,7 +243,7 @@ def process_template_extraction_task(img_id, img_path, img_additional_data, api_
             raise ValueError(f"API вернул ошибку: {response.status_code}, {response.text}")
 
         api_result = response.json()
-        logger.info("Ответ API успешно получен: %s", api_result)
+        # logger.info("Ответ API успешно получен: %s", api_result)
 
         detection_data = api_result.get("objects", [])
         template_data = api_result.get("template", None)
@@ -293,23 +273,22 @@ def process_quality_estimation_task(img_id, img_path, img_additional_data, api_u
         logger.info("Запрос на api_url %s", api_url)
         logger.info("Путь к изображению: %s", img_path)
 
-        with open(img_path, "rb") as file:
-            img = file.read()
-
-        image_data = base64.b64encode(img).decode("utf-8")
+        image_data = get_base64_from_path(img_path)
 
         if not image_data:
             logger.error("Base64-данные изображения не были сформированы.")
             raise ValueError("Base64-данные изображения не были сформированы.")
 
-        #logger.info("Дополнительные данные изображения: %s", img_additional_data)
+        # logger.info("Дополнительные данные изображения: %s", img_additional_data)
+
+        logger.info(f"{str(img_additional_data)[:50]}, {type(img_additional_data)}")
 
         payload = {
             "_image": {
                 "blob": image_data,
                 "format": "IMAGE",
             },
-            "objects": img_additional_data if isinstance(img_additional_data, list) else [],
+            "objects": img_additional_data
         }
 
         headers = {
@@ -322,7 +301,7 @@ def process_quality_estimation_task(img_id, img_path, img_additional_data, api_u
             raise ValueError(f"API вернул ошибку: {response.status_code}, {response.text}")
 
         api_result = response.json()
-        logger.info("Ответ API успешно получен: %s", api_result)
+        # logger.info("Ответ API успешно получен: %s", api_result)
 
         detection_data = api_result.get("objects", [])
         template_data = api_result.get("template", None)
@@ -348,6 +327,17 @@ def process_quality_estimation_task(img_id, img_path, img_additional_data, api_u
 def celery_summon_quality_estimation_task(task_id: int):
     summon_images_task(task_id, 'quality')
 
+
+@celery_app.task(name='tasks.detection.summon_detection', acks_late=True)
+def celery_summon_images_detection_task(task_id: int):
+    summon_images_task(task_id, 'detection')
+
+
+@celery_app.task(name='tasks.template.summon_template', acks_late=True)
+def celery_summon_template_extraction_task(task_id: int):
+    summon_images_task(task_id, 'template')
+
+
 def check_queue_task_count(queue_name):
     rabbitmq_url = "pyamqp://guest:guest@localhost//"  # потом надо поменять на os.getenv('rabbit_mq_url')
 
@@ -365,33 +355,50 @@ def check_queue_task_count(queue_name):
         return 0
 
 
-@celery_app.task(name='tasks.detection.summon_detection', acks_late=True)
-def celery_summon_images_detection_task(task_id: int):
-    summon_images_task(task_id, 'detection')
-
-
-@celery_app.task(name='tasks.template.summon_template', acks_late=True)
-def celery_summon_template_extraction_task(task_id: int):
-    summon_images_task(task_id, 'template')
-
 def get_oldest_requested_task():
     session = sync_session()
     try:
         # Извлекаем самую старую задачу с состоянием 'pending'
-        oldest_task = session.query(Task).filter(Task.status != 'not_requested', Task.status != 'done').order_by(Task.timestamp_of_request.asc()).first()
+        oldest_task = session.query(Task).filter(Task.status != 'not_requested', Task.status != 'done').order_by(
+            Task.timestamp_of_request.asc()).first()
 
         if oldest_task:
-            logger.info(f"Найдена самая старая задача: task_id={oldest_task.id}, request_time={oldest_task.timestamp_of_request}")
+            logger.info(
+                f"Найдена самая старая задача: task_id={oldest_task.id}, request_time={oldest_task.timestamp_of_request}")
             id = oldest_task.id
             status = oldest_task.status
 
         else:
             logger.info("Нет задач со статусом 'pending'")
-            id =  None
+            id = None
             status = None
-        return id,status
+        return id, status
     except Exception as e:
         logger.error(f"Ошибка при извлечении самой старой задачи: {str(e)}")
-        return None,None
+        return None, None
+    finally:
+        session.close()
+
+
+def update_task_status(task_id: int, task_status: str):
+    allowed_statuses = [
+        'not_requested', 'pending', 'image_detection_started',
+        'template_extraction_started', 'quality_estimation_started', 'done'
+    ]
+
+    if task_status not in allowed_statuses:
+        raise ValueError(f"Invalid status: {task_status}, allowed ones are {allowed_statuses}")
+
+    session = sync_session()
+
+    try:
+        # ORM-based update
+        stmt = update(Task).where(Task.id == task_id).values(status=task_status)
+        session.execute(stmt)
+        session.commit()
+        logger.debug(f'Successfully updated task id={task_id} to status={task_status}')
+    except Exception as ex:
+        logger.debug(f'Exception in update_task_status: {ex}')
+        session.rollback()
     finally:
         session.close()

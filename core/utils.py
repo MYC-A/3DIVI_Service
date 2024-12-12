@@ -48,11 +48,18 @@ async def get_or_create_task(session: AsyncSession, task_id: int = None):
         await session.commit()
     return task_id
 
-async def save_image_to_db(session: AsyncSession, task_id: int, image_path: str):
+async def save_image_to_db_legacy(session: AsyncSession, task_id: int, image_path: str):
     new_image = ImageData(task_id=task_id, image_path=image_path)
     session.add(new_image)
     await session.commit()
 
+async def save_image_to_db(session: AsyncSession, task_id: int, original_file_name: str, minio_client, bucket_name):
+    file_name = f"minio_{os.path.basename(original_file_name)}"
+    minio_client.fput_object(bucket_name, file_name, original_file_name)
+    image_url = f"{os.getenv('MINIO_ENDPOINT')}/{bucket_name}/{file_name}"
+    new_image = ImageData(task_id=task_id, image_path=file_name)
+    session.add(new_image)
+    await session.commit()
 
 async def save_image_to_db_v1(session: AsyncSession, task_id: int, file_path: str, additional_data: dict):
     new_image = ImageData(
