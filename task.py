@@ -2,7 +2,12 @@ import os
 import json
 import base64
 import logging
+from contextlib import contextmanager
+from io import BytesIO
+
 import requests
+import numpy as np
+import networkx as nx
 from minio import Minio
 from celery import Celery
 from kombu import Connection
@@ -10,7 +15,7 @@ from sqlalchemy import update
 from dotenv import load_dotenv
 from celery_db import sync_session
 from models import Task, ImageData
-
+from face_sdk_3divi import FacerecService
 # Инициализация объекта Celery
 celery_app = Celery("tasks", broker="pyamqp://guest:guest@localhost//")
 # Настройка логирования
@@ -36,7 +41,13 @@ def get_base64_from_path(img_path):
     data = response.read()
     return base64.b64encode(data).decode("utf-8")
 
-
+@contextmanager
+def get_session():
+    session = sync_session()
+    try:
+        yield session
+    finally:
+        session.close()
 # Вместо работы с пулом подключений - работаем с сессиями
 @celery_app.task(name='task.controller.controller')
 def controller():
@@ -87,6 +98,15 @@ def controller():
             f'Controller has started a new quality estimation task for task_id {task_id}, celery task id is {task.id}')
 
     elif task_status == 'quality_estimation_started':
+
+        update_task_status(task_id, 'clustering_started')
+
+        task = celery_summon_clustering_task.apply_async(args=[task_id], queue='queue_quality')
+        logger.info(
+            f'Controller has started a new clustering task for task_id {task_id}, celery task id is {task.id}')
+
+
+    elif task_status == 'clustering_started':
         logger.info(f'TASK DONE!')
         update_task_status(task_id, 'done')
 
@@ -101,6 +121,12 @@ def summon_images_task(task_id: int, api_stage: str):
     session = sync_session()
     processed_images_count = 0
     last_processed_id = None
+    additional_data_list = [] # ####
+
+    if api_stage == 'clustering':  # Переделать
+        process_clustering_task.apply_async(
+            args=[task_id], queue='queue_quality')
+        return {"clustering_message": f"Processing task on stage {api_stage} started for task_id: {task_id}"}
 
     try:
         while True:
@@ -140,9 +166,20 @@ def summon_images_task(task_id: int, api_stage: str):
                     process_quality_estimation_task.apply_async(
                         args=[img_id, img_path, img_additional_data, api_url], queue='queue_quality')
 
+            elif api_stage == 'clustering': # Переделать
+                process_clustering_task.apply_async(
+                    args=[task_id], queue='queue_quality')
+
             # Обновляем последний обработанный ID
             last_processed_id = img_id
             processed_images_count += 1
+
+        '''
+        if api_stage == 'clustering':
+            process_clustering_task.apply_async(
+                args=[task_id], queue='queue_quality')
+        '''
+
 
         return {"message": f"Processing task on stage {api_stage} started for task_id: {task_id}"}
     except Exception as ex:
@@ -206,7 +243,6 @@ def process_image_detection_task(img_id, img_path, img_additional_data, api_url:
         session.close()
 
     return f"Детекция изображения {img_id} получена успешно"
-
 
 @celery_app.task(name='tasks.template.process_template', acks_late=True)
 def process_template_extraction_task(img_id, img_path, img_additional_data, api_url: str):
@@ -322,6 +358,299 @@ def process_quality_estimation_task(img_id, img_path, img_additional_data, api_u
 
     return f"Детекция изображения {img_id} получена успешно"
 
+'''
+        ВЕРСИЯ БЕЗ ИНДЕКСОВ
+        
+        
+@celery_app.task(name='tasks.quality.clustering', acks_late=True)
+def process_clustering_task(task_id):
+
+    def fetch_data_in_batches(task_id):
+        with get_session() as session:
+            query = (
+                session.query(ImageData)
+                .filter(ImageData.task_id == task_id)
+                .yield_per(100)
+            )
+            for record in query:
+                yield record
+
+    def decode_blob(blob_str):
+        """
+        Декодирует строку blob в массив numpy.
+        """
+        blob_bytes = base64.b64decode(blob_str)
+        return np.frombuffer(blob_bytes, dtype=np.uint8)
+
+    def filter_group_new_clustering(embeddings, quality_scores):
+        """
+        Метод фильтрации и кластеризации.
+        """
+        distances = np.inner(embeddings, embeddings)
+        quality_scores_matrix = np.zeros_like(distances)
+        for i1 in range(len(embeddings)):
+            for i2 in range(len(embeddings)):
+                quality_scores_matrix[i1][i2] = min(quality_scores[i1], quality_scores[i2])
+        condition = (quality_scores_matrix - distances) > 0.1
+        connections = []
+        for i1 in range(condition.shape[0]):
+            for i2 in range(condition.shape[1]):
+                if i1 != i2 and not condition[i1][i2]:
+                    connections.append((i1, i2))
+        G = nx.Graph(connections)
+        communities = nx.algorithms.community.label_propagation_communities(G)
+        labels = [-1] * len(embeddings)
+        for i, community in enumerate(communities):
+            for s_l in community:
+                labels[s_l] = i
+        return np.array(labels)
+
+    embeddings_list = []
+    quality_scores_list = []
+    templates = []
+
+    logger.info("МЕТОД ЗАПУЩЕН")
+    for record in fetch_data_in_batches(task_id):
+        if record.additional_data is None:
+            logger.info(f"Дополнительные данные отсутствуют (None) для записи {record.id}")
+            continue
+
+       # logger.info(f"Данные {record.additional_data}")
+
+        # Обработка additional_data
+        if isinstance(record.additional_data, str):
+            try:
+                additional_data = json.loads(record.additional_data)
+            except json.JSONDecodeError as e:
+                logger.error(f"Ошибка декодирования JSON для записи {record.id}: {e}")
+                continue
+        elif isinstance(record.additional_data, list):
+            additional_data = record.additional_data
+        else:
+            logger.warning(f"Дополнительные данные имеют неожиданный тип: {type(record.additional_data)}")
+            continue
+
+        # Убедитесь, что additional_data является списком
+        if not isinstance(additional_data, list):
+            logger.warning(f"Дополнительные данные не являются списком для записи {record.id}")
+            continue
+
+        # Извлечение embeddings и quality_scores
+        for item in additional_data:
+            if "template" in item:
+                # Ищем любой ключ в template, который содержит blob
+                blob = None
+                for key in item["template"]:
+                    if isinstance(item["template"][key], dict) and "blob" in item["template"][key]:
+                        blob = item["template"][key]["blob"]
+                        logger.info(f"BLOB {blob[:10]}")
+                        break
+
+                if blob is None:
+                    logger.info(f"Шаблон не найден для записи {record.id}")
+                    continue
+
+                # Декодируем blob в embeddings
+                embeddings = decode_blob(blob)
+                embeddings_list.append(embeddings)
+
+                """
+                # Преобразуем blob в in-memory поток и загружаем шаблон
+                blob_bytes = base64.b64decode(blob)
+                binary_stream = BytesIO(blob_bytes)
+                template = recognizer.load_template(binary_stream)
+                templates.append(template)
+                """
+            if "confidence" in item:
+                quality_scores_list.append(item["confidence"])
+                logger.info(f"Embeddings{embeddings} , confidence {item["confidence"]}")
+            else:
+                logger.info("confidence не найдено")
+
+    # Преобразуем списки в numpy массивы
+    embeddings_array = np.array(embeddings_list)
+    quality_scores_array = np.array(quality_scores_list)
+
+    # Применяем метод фильтрации
+    if len(embeddings_array) > 0 and len(quality_scores_array) > 0:
+        labels = filter_group_new_clustering(embeddings_array, quality_scores_array)
+        logger.info(f"Результат кластеризации: {labels}")
+    else:
+        logger.warning("Нет данных для кластеризации.")
+    """
+    # Создаем индекс и выполняем поиск
+    if templates:
+        index = recognizer.create_index(templates, 1)
+        search_template = templates[0]  # Пример: используем первый шаблон для поиска
+        nearest = recognizer.search([search_template], index, 1)[0][0]
+        logger.info(f"Ближайший шаблон: {nearest}")
+    else:
+        logger.warning("Нет шаблонов для создания индекса и поиска.")
+    """
+
+    return f"Запрос обработан успешно"
+'''
+
+
+@celery_app.task(name='tasks.quality.clustering', acks_late=True)
+def process_clustering_task(task_id):
+    default_dll_path = "lib/libfacerec.so"
+
+    face_sdk_3divi_dir = "/home/user/3Divi/3_24_2"
+    service = FacerecService.create_service(
+        os.path.join(face_sdk_3divi_dir, default_dll_path),
+        os.path.join(face_sdk_3divi_dir, "conf/facerec")
+    )
+    recognizer = service.create_recognizer("recognizer_latest_v1000.xml", True, False, False)
+
+    def load_template_from_base64(blob_str):
+        """
+        Загружает шаблон из base64 строки.
+        """
+        try:
+            blob_bytes = base64.b64decode(blob_str)
+            binary_stream = BytesIO(blob_bytes)
+            return recognizer.load_template(binary_stream)
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке шаблона: {e}")
+            raise
+
+
+    def build_distance_matrix_with_index(templates):
+        """
+        Строит матрицу расстояний с использованием индекса.
+        """
+        n = len(templates)
+        distances = np.zeros((n, n))  # Инициализируем матрицу расстояний
+
+        # Создаем индекс для всех шаблонов
+        index = recognizer.create_index(templates, 1)
+        # print(n)
+        for i in range(n):
+            # Ищем ближайших соседей для каждого шаблона
+            nearest = recognizer.search([templates[i]], index, k=n)[0]
+            for neighbor in nearest:
+                distances[i][neighbor.i] = neighbor.match_result.score  # Записываем расстояние
+
+        logger.info(f"Матрица из индекса {distances}")
+        # Матрица расстояний симметрична, поэтому заполняем вторую половину
+        distances = np.minimum(distances, distances.T)
+
+        return distances
+
+    def filter_group_new_clustering(templates, quality_scores):
+        """
+        Метод фильтрации и кластеризации с использованием индекса.
+        """
+        # Строим матрицу расстояний с использованием индекса
+        distances = build_distance_matrix_with_index(templates)
+
+        # Создаем матрицу качества
+        quality_scores_matrix = np.minimum.outer(quality_scores, quality_scores)
+
+        # Определяем связи на основе условия
+        condition = (quality_scores_matrix - distances) > 0.1
+        connections = []
+        for i1 in range(condition.shape[0]):
+            for i2 in range(condition.shape[1]):
+                if i1 != i2 and not condition[i1][i2]:
+                    connections.append((i1, i2))
+
+        # Строим граф
+        G = nx.Graph(connections)
+
+        # Находим сообщества
+
+        # Формируем метки
+        communities = nx.algorithms.community.label_propagation_communities(G)
+        labels = [-1] * len(templates)
+        for i, community in enumerate(communities):
+            for s_l in community:
+                labels[s_l] = i
+        return np.array(labels)
+
+    def fetch_data_in_batches(task_id):
+        with get_session() as session:
+            query = (
+                session.query(ImageData)
+                .filter(ImageData.task_id == task_id)
+                .yield_per(100)
+            )
+            for record in query:
+                yield record
+
+    templates = []
+    quality_scores_list = []
+
+    logger.info("МЕТОД ЗАПУЩЕН")
+    for record in fetch_data_in_batches(task_id):
+        if record.additional_data is None:
+            logger.info(f"Дополнительные данные отсутствуют (None) для записи {record.id}")
+            continue
+
+        # Обработка additional_data
+        if isinstance(record.additional_data, str):
+            try:
+                additional_data = json.loads(record.additional_data)
+            except json.JSONDecodeError as e:
+                logger.error(f"Ошибка декодирования JSON для записи {record.id}: {e}")
+                continue
+        elif isinstance(record.additional_data, list):
+            additional_data = record.additional_data
+        else:
+            logger.warning(f"Дополнительные данные имеют неожиданный тип: {type(record.additional_data)}")
+            continue
+
+        # Убедитесь, что additional_data является списком
+        if not isinstance(additional_data, list):
+            logger.warning(f"Дополнительные данные не являются списком для записи {record.id}")
+            continue
+
+        # Извлечение embeddings и quality_scores
+        for item in additional_data:
+            if "template" in item:
+                # Ищем любой ключ в template, который содержит blob
+                blob = None
+                for key in item["template"]:
+                    if isinstance(item["template"][key], dict) and "blob" in item["template"][key]:
+                        blob = item["template"][key]["blob"]
+                        break
+
+                if blob is None:
+                    logger.info(f"Шаблон не найден для записи {record.id}")
+                    continue
+
+                # Загружаем шаблон из base64
+                template = load_template_from_base64(blob)
+                templates.append(template)
+
+            if "confidence" in item:
+                quality_scores_list.append(item["confidence"])
+                logger.info(f"Confidence: {item['confidence']}")
+            else:
+                logger.info("confidence не найдено")
+
+    # Преобразуем списки в numpy массивы
+    quality_scores_array = np.array(quality_scores_list)
+    print(quality_scores_array)
+
+    # Применяем метод фильтрации
+    if len(templates) > 0 and len(quality_scores_array) > 0:
+        labels = filter_group_new_clustering(templates, quality_scores_array)
+        logger.info(f"Результат кластеризации: {labels}")
+    else:
+        logger.warning("Нет данных для кластеризации.")
+
+    return f"Запрос обработан успешно labels {labels}"
+
+
+
+
+
+
+@celery_app.task(name='tasks.quality.summon_clustering', acks_late=True)
+def celery_summon_clustering_task(task_id: int):
+    summon_images_task(task_id, 'clustering')
 
 @celery_app.task(name='tasks.quality.summon_quality', acks_late=True)
 def celery_summon_quality_estimation_task(task_id: int):
@@ -383,7 +712,7 @@ def get_oldest_requested_task():
 def update_task_status(task_id: int, task_status: str):
     allowed_statuses = [
         'not_requested', 'pending', 'image_detection_started',
-        'template_extraction_started', 'quality_estimation_started', 'done'
+        'template_extraction_started', 'quality_estimation_started','clustering_started','done'
     ]
 
     if task_status not in allowed_statuses:
