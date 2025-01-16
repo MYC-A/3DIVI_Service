@@ -16,6 +16,9 @@ from dotenv import load_dotenv
 from celery_db import sync_session
 from models import Task, ImageData
 from face_sdk_3divi import FacerecService
+from sklearn.preprocessing import normalize
+from sklearn.metrics import pairwise_distances
+
 # Инициализация объекта Celery
 celery_app = Celery("tasks", broker="pyamqp://guest:guest@localhost//")
 # Настройка логирования
@@ -48,6 +51,7 @@ def get_session():
         yield session
     finally:
         session.close()
+
 # Вместо работы с пулом подключений - работаем с сессиями
 @celery_app.task(name='task.controller.controller')
 def controller():
@@ -503,6 +507,19 @@ def process_clustering_task(task_id):
     )
     recognizer = service.create_recognizer("recognizer_latest_v1000.xml", True, False, False)
 
+    # функция для нормализации эмбеддингов
+    def cosine_from_euclidean(embeddings, sq_euc) -> np.ndarray:
+        """
+        Get pairwise cosine distances from euclidean distances
+        embedding: int4 matrix of shape (N, C)
+        sq_euc: matrix of shape (N, N) of precalculated squared euclidean dists
+        """
+        zero_point = 0.5
+        dq_norms = np.linalg.norm(embeddings - zero_point, axis=1)
+        n1 = dq_norms[:, np.newaxis]
+        n2 = dq_norms[np.newaxis, :]
+        return ((n1 ** 2) + (n2 ** 2) - sq_euc) / (2 * n1 * n2)
+
     def load_template_from_base64(blob_str):
         """
         Загружает шаблон из base64 строки.
@@ -544,6 +561,8 @@ def process_clustering_task(task_id):
         """
         # Строим матрицу расстояний с использованием индекса
         distances = build_distance_matrix_with_index(templates)
+        sq_distances = np.power(distances, 2)
+        distances = cosine_from_euclidean(distances, sq_distances)
 
         # Создаем матрицу качества
         quality_scores_matrix = np.minimum.outer(quality_scores, quality_scores)
@@ -601,7 +620,6 @@ def process_clustering_task(task_id):
             logger.warning(f"Дополнительные данные имеют неожиданный тип: {type(record.additional_data)}")
             continue
 
-        # Убедитесь, что additional_data является списком
         if not isinstance(additional_data, list):
             logger.warning(f"Дополнительные данные не являются списком для записи {record.id}")
             continue
