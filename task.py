@@ -590,8 +590,8 @@ def process_clustering_task(task_id):
         """
         # Строим матрицу расстояний с использованием индекса
         distances = build_distance_matrix_with_index(templates)
-        sq_distances = np.power(distances, 2)
-        distances = cosine_from_euclidean(distances, sq_distances)
+        # sq_distances = np.power(distances, 2)
+        # distances = cosine_from_euclidean(distances, sq_distances)
 
         # Создаем матрицу качества
         quality_scores_matrix = np.minimum.outer(quality_scores, quality_scores)
