@@ -499,12 +499,19 @@ def process_clustering_task(task_id):
 @celery_app.task(name='tasks.quality.clustering', acks_late=True)
 def process_clustering_task(task_id):
     default_dll_path = "lib/libfacerec.so"
-
-    face_sdk_3divi_dir = "/home/user/3Divi/3_24_2"
+    face_sdk_3divi_dir = os.getenv('face_sdk_3divi_dir')
+    # face_sdk_3divi_dir = "/home/user/3Divi/3_24_2"
     service = FacerecService.create_service(
         os.path.join(face_sdk_3divi_dir, default_dll_path),
         os.path.join(face_sdk_3divi_dir, "conf/facerec")
     )
+
+    # face_sdk_3divi_dir = "/home/slonyara/3DiVi_FaceSDK/3_24_2"
+    # default_dll_path = "/home/slonyara/3DiVi_FaceSDK/3_24_2/lib/libfacerec.so"
+    # service = FacerecService.create_service(
+    #     dll_path=default_dll_path,
+    #     facerec_conf_dir="/home/slonyara/3DiVi_FaceSDK/3_24_2/conf/facerec", )
+
     recognizer = service.create_recognizer("recognizer_latest_v1000.xml", True, False, False)
 
     # функция для нормализации эмбеддингов
@@ -532,6 +539,28 @@ def process_clustering_task(task_id):
             logger.error(f"Ошибка при загрузке шаблона: {e}")
             raise
 
+    def push_clusters_to_additional_data(image_id_to_cluster : dict) -> bool:
+        """
+        Добавляем номер кластера к additional_data катинки в базе данных
+        :param image_id_to_cluster: словарь image_id : image_cluster
+        :return: флаг bool - уалось ли запушить изменения
+        """
+        session = sync_session()
+        try:
+            for img_id, value in image_id_to_cluster.items():
+                image = session.query(ImageData).filter(ImageData.id == img_id).first()
+                if image:
+                    image_data = json.loads(image.additional_data)
+
+                    image_data.append(['cluster', str(value)])
+
+                    image.additional_data = json.dumps(image_data)
+
+            session.commit()
+            return True
+        except Exception as ex:
+            print('ОШИБКА ДОБАВЛЕНИЯ В БАЗУ : ', ex)
+            return False
 
     def build_distance_matrix_with_index(templates):
         """
@@ -600,6 +629,7 @@ def process_clustering_task(task_id):
 
     templates = []
     quality_scores_list = []
+    image_id = []
 
     logger.info("МЕТОД ЗАПУЩЕН")
     for record in fetch_data_in_batches(task_id):
@@ -611,11 +641,13 @@ def process_clustering_task(task_id):
         if isinstance(record.additional_data, str):
             try:
                 additional_data = json.loads(record.additional_data)
+                id = record.id
             except json.JSONDecodeError as e:
                 logger.error(f"Ошибка декодирования JSON для записи {record.id}: {e}")
                 continue
         elif isinstance(record.additional_data, list):
             additional_data = record.additional_data
+            id = record.id
         else:
             logger.warning(f"Дополнительные данные имеют неожиданный тип: {type(record.additional_data)}")
             continue
@@ -641,6 +673,7 @@ def process_clustering_task(task_id):
                 # Загружаем шаблон из base64
                 template = load_template_from_base64(blob)
                 templates.append(template)
+                image_id.append(id)
 
             if "confidence" in item:
                 quality_scores_list.append(item["confidence"])
@@ -653,9 +686,19 @@ def process_clustering_task(task_id):
     print(quality_scores_array)
 
     # Применяем метод фильтрации
+    if len(quality_scores_array) == 0:
+        print('QUALITY SCORES НЕ НАЙДЕНЫ')
+        quality_scores_array = np.ones(quality_scores_array.shape)
+
     if len(templates) > 0 and len(quality_scores_array) > 0:
         labels = filter_group_new_clustering(templates, quality_scores_array)
-        logger.info(f"Результат кластеризации: {labels}")
+        from_image_id_to_cluster = dict(zip(image_id, labels))
+
+        result_of_push = push_clusters_to_additional_data(from_image_id_to_cluster)
+        if result_of_push:
+            logger.info(f"Результат кластеризации: {labels}, кластера добавлены в базу")
+        else:
+            logger.info(f"Результат кластеризации: {labels}, кластера НЕ добавлены в базу")
     else:
         logger.warning("Нет данных для кластеризации.")
 
