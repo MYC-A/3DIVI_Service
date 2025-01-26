@@ -627,6 +627,32 @@ def process_clustering_task(task_id):
             for record in query:
                 yield record
 
+    def intra_filtering_graph(embeddings, quality, threshold=0.1, distance_thr=0.4,dists=None):
+        embeddings = np.array(embeddings)
+
+        if dists is None:
+            embeddings = normalize(embeddings)
+            dists = np.inner(embeddings, embeddings)
+
+        qaas = np.minimum.outer(quality, quality)
+        if qaas[0][0] > 2:
+            qaas /= 100
+        conn = (qaas - dists) <= threshold
+
+        N = conn.shape[0]
+        not_equal_mask = ~np.eye(N, dtype=bool)
+        mask = not_equal_mask & conn & (dists > distance_thr)
+        i1_array, i2_array = np.where(mask)
+        connections = [(i, j, {"weight": dists[i, j]}) for i, j in zip(i1_array, i2_array)]
+        G = nx.Graph(connections)
+        communities = nx.algorithms.community.label_propagation_communities(G)
+        group_labels = [-1] * len(embeddings)
+        for i, b in enumerate(communities):
+            for bb in b:
+                group_labels[bb] = i
+
+        return np.array(group_labels)
+
     templates = []
     quality_scores_list = []
     image_id = []
@@ -671,7 +697,7 @@ def process_clustering_task(task_id):
                     continue
 
                 # Загружаем шаблон из base64
-                template = load_template_from_base64(blob)
+                template = np.frombuffer(base64.b64decode(blob), dtype='uint8').reshape(296)
                 templates.append(template)
                 image_id.append(id)
 
@@ -691,7 +717,14 @@ def process_clustering_task(task_id):
         quality_scores_array = np.ones(quality_scores_array.shape)
 
     if len(templates) > 0 and len(quality_scores_array) > 0:
-        labels = filter_group_new_clustering(templates, quality_scores_array)
+        templates = np.array(templates)
+
+        euc = pairwise_distances(templates, templates)
+        sq_euc = np.power(euc, 2)
+        cos_from_euc = cosine_from_euclidean(templates, sq_euc)
+        labels = intra_filtering_graph(templates, quality_scores_array)
+
+        # labels = filter_group_new_clustering(templates, quality_scores_array)
         from_image_id_to_cluster = dict(zip(image_id, labels))
 
         result_of_push = push_clusters_to_additional_data(from_image_id_to_cluster)
