@@ -3,8 +3,8 @@ import json
 import base64
 import logging
 from contextlib import contextmanager
+from bitstring import BitArray
 from io import BytesIO
-
 import requests
 import numpy as np
 import networkx as nx
@@ -697,8 +697,19 @@ def process_clustering_task(task_id):
                     continue
 
                 # Загружаем шаблон из base64
-                template = np.frombuffer(base64.b64decode(blob), dtype='uint8').reshape(296)
-                templates.append(template)
+                idx_unpacking = np.arange(512)
+                idx_unpacking[::2] += 1
+                idx_unpacking[1::2] -= 1
+
+                template = load_template_from_base64(blob)
+                byte_io = BytesIO()
+                template.save(byte_io)
+                template_bin = byte_io.getvalue()[4:]
+                template_bin = BitArray(template_bin)
+                predict_tensor = [template_bin[i * 4:(i + 1) * 4].int for i in idx_unpacking]
+
+                # template = np.frombuffer(base64.b64decode(blob), dtype='uint8').reshape(296)
+                templates.append(predict_tensor)
                 image_id.append(id)
 
             if "confidence" in item:
@@ -722,7 +733,8 @@ def process_clustering_task(task_id):
         euc = pairwise_distances(templates, templates)
         sq_euc = np.power(euc, 2)
         cos_from_euc = cosine_from_euclidean(templates, sq_euc)
-        labels = intra_filtering_graph(templates, quality_scores_array)
+        distances = cos_from_euc
+        labels = intra_filtering_graph(templates, quality_scores_array, dists=distances)
 
         # labels = filter_group_new_clustering(templates, quality_scores_array)
         from_image_id_to_cluster = dict(zip(image_id, labels))
