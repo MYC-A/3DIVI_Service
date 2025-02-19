@@ -2,7 +2,8 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.utils import (save_file, save_base64_image, get_or_create_task, save_image_to_db,
-                        find_free_task_id, save_image_to_db_v1, find_first_free_task_id, get_all_images_by_task_id)
+                        find_free_task_id, save_image_to_db_v1, find_first_free_task_id, get_all_images_by_task_id,
+                        get_task_status, get_clusters)
 from schemas import ImageBase64Schema
 from api.dependencies import get_session, get_async_session
 from task import update_task_status
@@ -38,8 +39,10 @@ async def save_uploaded_file(upload_file: UploadFile, destination: str):
         while content := await upload_file.read(1024):
             await out_file.write(content)
 
+
 @router.post("/upload_images")
-async def upload_images(task_id: int = None, files: list[UploadFile] = File(...), session: AsyncSession = Depends(get_session)):
+async def upload_images(task_id: int = None, files: list[UploadFile] = File(...),
+                        session: AsyncSession = Depends(get_session)):
     task_id = await get_or_create_task(session, task_id)
 
     for file in files:
@@ -51,12 +54,13 @@ async def upload_images(task_id: int = None, files: list[UploadFile] = File(...)
 
     return {"message": "Images uploaded successfully"}
 
+
 @router.post("/upload_images_base64")
 async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = Depends(get_session)):
     task_id = await get_or_create_task(session, data.task_id)
 
     for image_data in data.images:
-        base64_image = image_data.get("base64")  # Доступ через словарь
+        base64_image = image_data.get("base64")
         if not base64_image:
             raise HTTPException(status_code=400, detail="Image base64 data is missing")
 
@@ -67,7 +71,7 @@ async def upload_images_base64(data: ImageBase64Schema, session: AsyncSession = 
         additional_data = {k: v for k, v in image_data.items() if k != "base64"}
 
         # Сохраняем изображение и дополнительные данные в базе данных
-        await save_image_to_db_v1(session, task_id, file_path, additional_data)
+        await save_image_to_db(session, task_id, file_path, minio_client, bucket_name)
 
     return {"message": "Images uploaded successfully", "task_id": task_id}
 
@@ -77,10 +81,22 @@ async def get_first_free_task_id(session: AsyncSession = Depends(get_session)):
     free_task_id = await find_first_free_task_id(session)
     return {"first_free_task_id": free_task_id}
 
+
 @router.get("/free_task_id")
 async def get_first_free_task_id(session: AsyncSession = Depends(get_session)):
     free_task_id = await find_free_task_id(session)
     return {"free_task_id": free_task_id}
+
+
+@router.get("/get_task_status_by_id")
+async def get_task_status_by_id(task_id: int, session: AsyncSession = Depends(get_session)):
+    task_status = await get_task_status(task_id, session)
+    return {"task_status": task_status}
+
+@router.get("/get_clusters_by_task_id")
+async def get_clusters_by_task_id(task_id: int, session: AsyncSession = Depends(get_session)):
+    clusters = await get_clusters(task_id, session)
+    return {"clusters": clusters}
 
 
 @router.post("/process_images")
@@ -92,10 +108,7 @@ async def process_images(task_id: int):
     # Запуск задач Celery
     update_task_status(task_id, 'pending')
     # task = celery_summon_images_detection_task.apply_async(args=[task_id])
-    return {"message": f"Processing task started for task_id: {task_id}"} #, "celery_task_id": task.id}
-
-
-
+    return {"message": f"Processing task started for task_id: {task_id}"}  # , "celery_task_id": task.id}
 
 
 def generate_html(clusters, output_file="clusters.html"):
@@ -168,12 +181,14 @@ def generate_html(clusters, output_file="clusters.html"):
     except Exception as e:
         print(f"Ошибка при генерации HTML: {e}")
 
+
 minio_client = Minio(
     "localhost:9000",
     access_key="minioadmin",
     secret_key="minioadmin",
     secure=False
 )
+
 
 @router.get("/proxy/minio/{bucket_name}/{object_name}")
 async def proxy_minio(bucket_name: str, object_name: str):
@@ -190,6 +205,7 @@ async def proxy_minio(bucket_name: str, object_name: str):
         )
     except Exception as e:
         raise HTTPException(status_code=404, detail="File not found")
+
 
 # Эндпоинт
 @router.get("/get_cluster_view", response_class=HTMLResponse)

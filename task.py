@@ -498,19 +498,19 @@ def process_clustering_task(task_id):
 
 @celery_app.task(name='tasks.quality.clustering', acks_late=True)
 def process_clustering_task(task_id):
-    default_dll_path = "lib/libfacerec.so"
-    face_sdk_3divi_dir = os.getenv('face_sdk_3divi_dir')
-    # face_sdk_3divi_dir = "/home/user/3Divi/3_24_2"
-    service = FacerecService.create_service(
-        os.path.join(face_sdk_3divi_dir, default_dll_path),
-        os.path.join(face_sdk_3divi_dir, "conf/facerec")
-    )
-
-    # face_sdk_3divi_dir = "/home/slonyara/3DiVi_FaceSDK/3_24_2"
-    # default_dll_path = "/home/slonyara/3DiVi_FaceSDK/3_24_2/lib/libfacerec.so"
+    # default_dll_path = "lib/libfacerec.so"
+    # face_sdk_3divi_dir = os.getenv('face_sdk_3divi_dir')
+    # # face_sdk_3divi_dir = "/home/user/3Divi/3_24_2"
     # service = FacerecService.create_service(
-    #     dll_path=default_dll_path,
-    #     facerec_conf_dir="/home/slonyara/3DiVi_FaceSDK/3_24_2/conf/facerec", )
+    #     os.path.join(face_sdk_3divi_dir, default_dll_path),
+    #     os.path.join(face_sdk_3divi_dir, "conf/facerec")
+    # )
+
+    face_sdk_3divi_dir = "/home/slonyara/3DiVi_FaceSDK/3_24_2"
+    default_dll_path = "/home/slonyara/3DiVi_FaceSDK/3_24_2/lib/libfacerec.so"
+    service = FacerecService.create_service(
+        dll_path=default_dll_path,
+        facerec_conf_dir="/home/slonyara/3DiVi_FaceSDK/3_24_2/conf/facerec", )
 
     recognizer = service.create_recognizer("recognizer_latest_v1000.xml", True, False, False)
 

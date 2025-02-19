@@ -1,7 +1,7 @@
 import base64
 import os
 from typing import Optional
-
+import json
 from fastapi import Request, Response
 from uuid import uuid4
 
@@ -95,6 +95,39 @@ async def find_free_task_id(session: AsyncSession) -> int:
     free_task_id = task_ids[-1]
 
     return free_task_id+1
+
+async def get_task_status(task_id: int, session: AsyncSession) -> list:
+    result = await session.execute(select(Task.status).filter(Task.id == task_id))
+    task_status = sorted([row[0] for row in result.fetchall()])
+
+    return task_status
+
+async def get_clusters(task_id, session: AsyncSession) -> list:
+    result = await session.execute(select(ImageData.additional_data,
+                                          ImageData.image_path,
+                                          ImageData.id).filter(ImageData.task_id == task_id))
+
+    fetched_tuple_data = result.fetchall()
+
+    additional_data_list = sorted([row[0] for row in fetched_tuple_data])
+    image_path_list = sorted([row[1] for row in fetched_tuple_data])
+    image_id_list = sorted([row[2] for row in fetched_tuple_data])
+
+    print(image_path_list)
+    print(image_id_list)
+
+    clusters = []
+    for item_id, additional_data in enumerate(additional_data_list):
+        json_addition_data = json.loads(additional_data)
+        print(json_addition_data)
+        for item in json_addition_data:
+            if isinstance(item, list) and item:
+                if item[0] == 'cluster':
+                    clusters.append([ image_id_list[item_id], image_path_list[item_id], int(item[1]) ])
+
+
+    return clusters
+
 
 # Функция для извлечения task_id из cookies
 def get_task_id_from_cookies(request: Request) -> Optional[int]:

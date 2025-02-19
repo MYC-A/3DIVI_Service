@@ -1,3 +1,4 @@
+import asyncio
 from sklearn.metrics import pairwise_distances
 from sklearn.preprocessing import normalize
 from face_sdk_3divi import FacerecService
@@ -8,16 +9,29 @@ import numpy as np
 import base64
 import json
 import os
-
 with open('dump.json', 'r') as f:
     data_list = json.load(f)
 
-default_dll_path = "lib/libfacerec.so"
-face_sdk_3divi_dir = 'face_sdk_3divi_dir'
+from core.utils import get_all_images_by_task_id
+from api.dependencies import get_async_session
+
+async def main():
+    session = await get_async_session()
+    images = await get_all_images_by_task_id(session, 9)
+    for image in images:
+        print(image.image_path)
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+    exit(0)
+
+face_sdk_3divi_dir = "/home/slonyara/3DiVi_FaceSDK/3_24_2"
+default_dll_path = "/home/slonyara/3DiVi_FaceSDK/3_24_2/lib/libfacerec.so"
 service = FacerecService.create_service(
-    os.path.join(face_sdk_3divi_dir, default_dll_path),
-    os.path.join(face_sdk_3divi_dir, "conf/facerec")
-)
+    dll_path=default_dll_path,
+    facerec_conf_dir="/home/slonyara/3DiVi_FaceSDK/3_24_2/conf/facerec", )
+
 
 recognizer = service.create_recognizer("recognizer_latest_v1000.xml", True, False, False)
 
@@ -46,7 +60,7 @@ def cosine_from_euclidean(embeddings, sq_euc) -> np.ndarray:
     n2 = dq_norms[np.newaxis, :]
     return ((n1 ** 2) + (n2 ** 2) - sq_euc) / (2 * n1 * n2)
 
-def intra_filtering_graph(embeddings, quality, threshold=0.1, distance_thr=0.4,
+def intra_filtering_graph(embeddings, quality, threshold=0.8, distance_thr=0.8,
     dists=None):
     embeddings = np.array(embeddings)
 
@@ -102,7 +116,9 @@ for item in data_list:
         templates.append(predict_tensor)
 
     if "confidence" in item:
-        quality_scores_list.append(item["confidence"])
+        print(item.keys())
+        print(item)
+        quality_scores_list.append(item["qaa"])
 
 quality_scores_array = np.array(quality_scores_list)
 
@@ -113,3 +129,5 @@ cos_from_euc = cosine_from_euclidean(templates, sq_euc)
 distances = cos_from_euc
 labels = intra_filtering_graph(templates, quality_scores_array, dists=distances)
 print(labels)
+
+#[0 1 2 3 4 1 5 2 0 3 6 7 4 6 5 7]
