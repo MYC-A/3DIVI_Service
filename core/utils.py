@@ -103,30 +103,44 @@ async def get_task_status(task_id: int, session: AsyncSession) -> list:
     return task_status
 
 async def get_clusters(task_id, session: AsyncSession) -> list:
-    result = await session.execute(select(ImageData.additional_data,
-                                          ImageData.image_path,
-                                          ImageData.id).filter(ImageData.task_id == task_id))
-
+    result = await session.execute(
+        select(
+            ImageData.additional_data,
+            ImageData.image_path,
+            ImageData.id
+        ).filter(ImageData.task_id == task_id)
+    )
     fetched_tuple_data = result.fetchall()
 
-    additional_data_list = sorted([row[0] for row in fetched_tuple_data])
-    image_path_list = sorted([row[1] for row in fetched_tuple_data])
-    image_id_list = sorted([row[2] for row in fetched_tuple_data])
+    filtered_data = [row for row in fetched_tuple_data if row[0] is not None]
 
-    print(image_path_list)
-    print(image_id_list)
+    sorted_data = sorted(filtered_data, key=lambda row: row[2])
+
+    additional_data_list = [row[0] for row in sorted_data]
+    image_path_list = [row[1] for row in sorted_data]
+    image_id_list = [row[2] for row in sorted_data]
 
     clusters = []
     for item_id, additional_data in enumerate(additional_data_list):
-        json_addition_data = json.loads(additional_data)
-        print(json_addition_data)
+        if isinstance(additional_data, list):
+            json_addition_data = additional_data
+        elif isinstance(additional_data, str):
+            json_addition_data = json.loads(additional_data)
+        else:
+            raise TypeError(f"Unexpected type for additional_data: {type(additional_data)}")
+
         for item in json_addition_data:
             if isinstance(item, list) and item:
                 if item[0] == 'cluster':
-                    clusters.append([ image_id_list[item_id], image_path_list[item_id], int(item[1]) ])
-
+                    clusters.append([
+                        image_id_list[item_id],
+                        image_path_list[item_id],
+                        int(item[1])
+                    ])
 
     return clusters
+
+
 
 
 # Функция для извлечения task_id из cookies

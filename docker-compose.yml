@@ -1,0 +1,190 @@
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: raw_data
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  minio:
+    image: quay.io/minio/minio
+    command: server /data --console-address ":9090"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9090:9090"
+    volumes:
+      - minio_data:/data
+
+  api:
+    build: .
+    environment:
+      image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
+      image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
+      image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
+      stages_of_preparing: "['detection', 'template', 'quality','clustering']"
+      db_username: "postgres"
+      db_password: "postgres"
+      db_host: "postgres"       # вместо localhost – имя сервиса postgres
+      db_port: "5432"
+      db_name: "raw_data"
+      face_sdk_3divi_dir: "/3DiViFaceSDK"  # путь внутри контейнера
+      MINIO_ENDPOINT: "minio:9000"         # имя сервиса minio
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      MINIO_BUCKET_NAME: "images"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/raw_data"
+    volumes:
+      - ./3DiViFaceSDK:/3DiViFaceSDK  # Монтируем локальную папку FaceSDK
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+
+  celery_beat:
+    build: .
+    command: celery -A celery_app beat --loglevel=info
+    environment:
+      image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
+      image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
+      image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
+      stages_of_preparing: "['detection', 'template', 'quality','clustering']"
+      db_username: "postgres"
+      db_password: "postgres"
+      db_host: "postgres"
+      db_port: "5432"
+      db_name: "raw_data"
+      face_sdk_3divi_dir: "/3DiViFaceSDK"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      MINIO_BUCKET_NAME: "images"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/raw_data"
+    volumes:
+      - ./3DiViFaceSDK:/3DiViFaceSDK
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+
+  celery_worker_detection:
+    build: .
+    command: celery -A celery_app worker --loglevel=info --queues=queue_detection --concurrency=8
+    environment:
+      image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
+      image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
+      image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
+      stages_of_preparing: "['detection', 'template', 'quality','clustering']"
+      db_username: "postgres"
+      db_password: "postgres"
+      db_host: "postgres"
+      db_port: "5432"
+      db_name: "raw_data"
+      face_sdk_3divi_dir: "/3DiViFaceSDK"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      MINIO_BUCKET_NAME: "images"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/raw_data"
+    volumes:
+      - ./3DiViFaceSDK:/3DiViFaceSDK
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+
+  celery_worker_template:
+    build: .
+    command: celery -A celery_app worker --loglevel=info --queues=queue_template --concurrency=3
+    environment:
+      image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
+      image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
+      image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
+      stages_of_preparing: "['detection', 'template', 'quality','clustering']"
+      db_username: "postgres"
+      db_password: "postgres"
+      db_host: "postgres"
+      db_port: "5432"
+      db_name: "raw_data"
+      face_sdk_3divi_dir: "/3DiViFaceSDK"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      MINIO_BUCKET_NAME: "images"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/raw_data"
+    volumes:
+      - ./3DiViFaceSDK:/3DiViFaceSDK
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+
+  celery_worker_quality:
+    build: .
+    command: celery -A celery_app worker --loglevel=info --queues=queue_quality --concurrency=2
+    environment:
+      image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
+      image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
+      image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
+      stages_of_preparing: "['detection', 'template', 'quality','clustering']"
+      db_username: "postgres"
+      db_password: "postgres"
+      db_host: "postgres"
+      db_port: "5432"
+      db_name: "raw_data"
+      face_sdk_3divi_dir: "/3DiViFaceSDK"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      MINIO_BUCKET_NAME: "images"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/raw_data"
+    volumes:
+      - ./3DiViFaceSDK:/3DiViFaceSDK
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+
+  celery_worker_controller:
+    build: .
+    command: celery -A celery_app worker --loglevel=info --queues=queue_controller --concurrency=1
+    environment:
+      image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
+      image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
+      image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
+      stages_of_preparing: "['detection', 'template', 'quality','clustering']"
+      db_username: "postgres"
+      db_password: "postgres"
+      db_host: "postgres"
+      db_port: "5432"
+      db_name: "raw_data"
+      face_sdk_3divi_dir: "/3DiViFaceSDK"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      MINIO_BUCKET_NAME: "images"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/raw_data"
+    volumes:
+      - ./3DiViFaceSDK:/3DiViFaceSDK
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+
+volumes:
+  postgres_data:
+  minio_data:

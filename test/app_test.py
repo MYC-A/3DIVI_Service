@@ -53,7 +53,7 @@ def test_process_images(client, pytestconfig):
     assert data.get("message") == expected_message
 
     timeout = 600
-    interval = 10
+    interval = 20
     elapsed = 0
 
     while elapsed < timeout:
@@ -63,7 +63,8 @@ def test_process_images(client, pytestconfig):
         clusters_data = response.json()
         actual_clusters = {}
         clusters_list = clusters_data.get('clusters')
-        if clusters_list:
+
+        if len(clusters_list) != 0:
 
             for cluster_data in clusters_list:
                 cluster = cluster_data[2]
@@ -80,6 +81,7 @@ def test_process_images(client, pytestconfig):
     else:
         pytest.fail("Timeout waiting for image processing to complete")
 
+    # сравниваем количество-численность кластеров
     expected = Counter([len(i) for i in expected_clusters])
     actual = Counter([len(i) for i in actual_clusters.values()])
 

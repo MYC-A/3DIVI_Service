@@ -12,19 +12,21 @@ import os
 with open('dump.json', 'r') as f:
     data_list = json.load(f)
 
+data_list = '596, 0.4138190898489445]}, \"left_eye_brow_up\": {\"proj\": [0.3815615971883138, 0.41410803287587267]}, \"left_eye_brow_right\": {\"proj\": [0>'
+
 from core.utils import get_all_images_by_task_id
 from api.dependencies import get_async_session
-
-async def main():
-    session = await get_async_session()
-    images = await get_all_images_by_task_id(session, 9)
-    for image in images:
-        print(image.image_path)
-
-
-if __name__ == '__main__':
-    asyncio.run(main())
-    exit(0)
+#
+# async def main():
+#     session = await get_async_session()
+#     images = await get_all_images_by_task_id(session, 9)
+#     for image in images:
+#         print(image.image_path)
+#
+#
+# if __name__ == '__main__':
+#     asyncio.run(main())
+#     exit(0)
 
 face_sdk_3divi_dir = "/home/slonyara/3DiVi_FaceSDK/3_24_2"
 default_dll_path = "/home/slonyara/3DiVi_FaceSDK/3_24_2/lib/libfacerec.so"
@@ -115,10 +117,8 @@ for item in data_list:
 
         templates.append(predict_tensor)
 
-    if "confidence" in item:
-        print(item.keys())
-        print(item)
-        quality_scores_list.append(item["qaa"])
+    if "quality" in item:
+        quality_scores_list.append(item["quality"]["total_score"])
 
 quality_scores_array = np.array(quality_scores_list)
 
