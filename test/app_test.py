@@ -6,16 +6,19 @@ import time
 import pytest
 
 def test_loading_images(client):
-    payload_images = [{
-        "base64": b'test_image_dlya_proverochki',
-        "filename": 'awesome_filename.png'
-    }]
+    test_image_bytes = b'test_image_dlya_proverochki'
+    base64_image = base64.b64encode(test_image_bytes).decode('utf-8')
 
+    payload_images = [{
+        "base64": base64_image,
+        "filename": "awesome_filename.png"
+    }]
 
     payload = {
         "task_id": None,
         "images": payload_images
     }
+
 
     response = client.post("/upload_images_base64", json=payload)
     assert response.status_code == 200, response.text
