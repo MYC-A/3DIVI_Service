@@ -4,8 +4,25 @@ import json
 import os
 import time
 import pytest
-from sqlalchemy import select
-from models import ImageData
+
+def test_loading_images(client):
+    payload_images = [{
+        "base64": b'test_image_dlya_proverochki',
+        "filename": 'awesome_filename.png'
+    }]
+
+
+    payload = {
+        "task_id": None,
+        "images": payload_images
+    }
+
+    response = client.post("/upload_images_base64", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data.get("message") == "Images uploaded successfully"
+    task_id = data.get("task_id")
+    assert task_id is not None
 
 
 @pytest.mark.slow

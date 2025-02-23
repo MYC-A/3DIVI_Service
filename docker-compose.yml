@@ -9,17 +9,31 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   rabbitmq:
     image: rabbitmq:3-management
     ports:
       - "5672:5672"
       - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
 
   minio:
     image: quay.io/minio/minio
-    command: server /data --console-address ":9090"
+    command: server /data --console-address ":9090" --quiet
     environment:
+      MINIO_DEFAULT_BUCKETS: "images"
+      MINIO_SKIP_CLIENT: "yes"
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
@@ -27,38 +41,49 @@ services:
       - "9090:9090"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build: .
+    privileged: true
     environment:
+      CELERY_BROKER_URL: "amqp://guest:guest@rabbitmq:5672//"
       image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
       image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
       image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
       stages_of_preparing: "['detection', 'template', 'quality','clustering']"
       db_username: "postgres"
       db_password: "postgres"
-      db_host: "postgres"       # вместо localhost – имя сервиса postgres
+      db_host: "postgres"
       db_port: "5432"
       db_name: "raw_data"
-      face_sdk_3divi_dir: "/3DiViFaceSDK"  # путь внутри контейнера
-      MINIO_ENDPOINT: "minio:9000"         # имя сервиса minio
+      face_sdk_3divi_dir: "/3DiViFaceSDK"
+      MINIO_ENDPOINT: "minio:9000"
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
       MINIO_BUCKET_NAME: "images"
       DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/raw_data"
     volumes:
-      - ./3DiViFaceSDK:/3DiViFaceSDK  # Монтируем локальную папку FaceSDK
+      - ./3DiViFaceSDK:/3DiViFaceSDK
     ports:
-      - "8000:8000"
+      - "8000:8080"
     depends_on:
-      - postgres
-      - rabbitmq
-      - minio
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   celery_beat:
     build: .
     command: celery -A celery_app beat --loglevel=info
     environment:
+      CELERY_BROKER_URL: "amqp://guest:guest@rabbitmq:5672//"
       image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
       image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
       image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
@@ -77,14 +102,18 @@ services:
     volumes:
       - ./3DiViFaceSDK:/3DiViFaceSDK
     depends_on:
-      - postgres
-      - rabbitmq
-      - minio
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   celery_worker_detection:
     build: .
     command: celery -A celery_app worker --loglevel=info --queues=queue_detection --concurrency=8
     environment:
+      CELERY_BROKER_URL: "amqp://guest:guest@rabbitmq:5672//"
       image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
       image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
       image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
@@ -103,14 +132,18 @@ services:
     volumes:
       - ./3DiViFaceSDK:/3DiViFaceSDK
     depends_on:
-      - postgres
-      - rabbitmq
-      - minio
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   celery_worker_template:
     build: .
     command: celery -A celery_app worker --loglevel=info --queues=queue_template --concurrency=3
     environment:
+      CELERY_BROKER_URL: "amqp://guest:guest@rabbitmq:5672//"
       image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
       image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
       image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
@@ -129,14 +162,18 @@ services:
     volumes:
       - ./3DiViFaceSDK:/3DiViFaceSDK
     depends_on:
-      - postgres
-      - rabbitmq
-      - minio
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   celery_worker_quality:
     build: .
     command: celery -A celery_app worker --loglevel=info --queues=queue_quality --concurrency=2
     environment:
+      CELERY_BROKER_URL: "amqp://guest:guest@rabbitmq:5672//"
       image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
       image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
       image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
@@ -155,14 +192,18 @@ services:
     volumes:
       - ./3DiViFaceSDK:/3DiViFaceSDK
     depends_on:
-      - postgres
-      - rabbitmq
-      - minio
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   celery_worker_controller:
     build: .
     command: celery -A celery_app worker --loglevel=info --queues=queue_controller --concurrency=1
     environment:
+      CELERY_BROKER_URL: "amqp://guest:guest@rabbitmq:5672//"
       image_api_detection_url: "https://demo.3divi.ai/face-detector-face-fitter/v2/process/sample"
       image_api_template_url: "https://demo.3divi.ai/template-extractor/v2/process/sample"
       image_api_quality_url: "https://demo.3divi.ai/quality-assessment-estimator/v2/process/sample"
@@ -181,9 +222,12 @@ services:
     volumes:
       - ./3DiViFaceSDK:/3DiViFaceSDK
     depends_on:
-      - postgres
-      - rabbitmq
-      - minio
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
 volumes:
   postgres_data:

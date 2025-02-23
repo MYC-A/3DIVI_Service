@@ -2,20 +2,20 @@ import os
 import json
 import base64
 import logging
-from contextlib import contextmanager
-from bitstring import BitArray
-from io import BytesIO
 import requests
 import numpy as np
 import networkx as nx
+from io import BytesIO
 from minio import Minio
 from celery import Celery
 from kombu import Connection
 from sqlalchemy import update
+from bitstring import BitArray
 from dotenv import load_dotenv
 from celery_db import sync_session
 from models import Task, ImageData
-from face_sdk_3divi import FacerecService
+from contextlib import contextmanager
+# from face_sdk_3divi import FacerecService
 from sklearn.preprocessing import normalize
 from sklearn.metrics import pairwise_distances
 
@@ -128,8 +128,8 @@ def summon_images_task(task_id: int, api_stage: str):
     additional_data_list = [] # ####
 
     if api_stage == 'clustering':  # Переделать
-        process_clustering_task.apply_async(
-            args=[task_id], queue='queue_quality')
+        # process_clustering_task.apply_async(
+        #     args=[task_id], queue='queue_quality')
         return {"clustering_message": f"Processing task on stage {api_stage} started for task_id: {task_id}"}
 
     try:
@@ -171,8 +171,9 @@ def summon_images_task(task_id: int, api_stage: str):
                         args=[img_id, img_path, img_additional_data, api_url], queue='queue_quality')
 
             elif api_stage == 'clustering': # Переделать
-                process_clustering_task.apply_async(
-                    args=[task_id], queue='queue_quality')
+                pass
+                # process_clustering_task.apply_async(
+                #     args=[task_id], queue='queue_quality')
 
             # Обновляем последний обработанный ID
             last_processed_id = img_id
@@ -503,262 +504,262 @@ def process_clustering_task(task_id):
 '''
 
 
-@celery_app.task(name='tasks.quality.clustering', acks_late=True)
-def process_clustering_task(task_id):
-
-    default_dll_path = "lib/libfacerec.so"
-    face_sdk_3divi_dir = os.getenv('face_sdk_3divi_dir')
-    service = FacerecService.create_service(
-        os.path.join(face_sdk_3divi_dir, default_dll_path),
-        os.path.join(face_sdk_3divi_dir, "conf/facerec")
-    )
-
-    # face_sdk_3divi_dir = "/home/slonyara/3DiVi_FaceSDK/3_24_2"
-    # default_dll_path = "/home/slonyara/3DiVi_FaceSDK/3_24_2/lib/libfacerec.so"
-    # service = FacerecService.create_service(
-    #     dll_path=default_dll_path,
-    #     facerec_conf_dir="/home/slonyara/3DiVi_FaceSDK/3_24_2/conf/facerec", )
-
-    recognizer = service.create_recognizer("recognizer_latest_v1000.xml", True, False, False)
-
-    # функция для нормализации эмбеддингов
-    def cosine_from_euclidean(embeddings, sq_euc) -> np.ndarray:
-        """
-        Get pairwise cosine distances from euclidean distances
-        embedding: int4 matrix of shape (N, C)
-        sq_euc: matrix of shape (N, N) of precalculated squared euclidean dists
-        """
-        zero_point = 0.5
-        dq_norms = np.linalg.norm(embeddings - zero_point, axis=1)
-        n1 = dq_norms[:, np.newaxis]
-        n2 = dq_norms[np.newaxis, :]
-        return ((n1 ** 2) + (n2 ** 2) - sq_euc) / (2 * n1 * n2)
-
-    def load_template_from_base64(blob_str):
-        """
-        Загружает шаблон из base64 строки.
-        """
-        try:
-            blob_bytes = base64.b64decode(blob_str)
-            binary_stream = BytesIO(blob_bytes)
-            return recognizer.load_template(binary_stream)
-        except Exception as e:
-            logger.error(f"Ошибка при загрузке шаблона: {e}")
-            raise
-
-    def push_clusters_to_additional_data(image_id_to_cluster : dict) -> bool:
-        """
-        Добавляем номер кластера к additional_data катинки в базе данных
-        :param image_id_to_cluster: словарь image_id : image_cluster
-        :return: флаг bool - уалось ли запушить изменения
-        """
-        session = sync_session()
-        try:
-            for img_id, value in image_id_to_cluster.items():
-                image = session.query(ImageData).filter(ImageData.id == img_id).first()
-                if image:
-                    image_data = json.loads(image.additional_data)
-
-                    image_data.append(['cluster', str(value)])
-
-                    image.additional_data = json.dumps(image_data)
-
-            session.commit()
-            return True
-        except Exception as ex:
-            print('ОШИБКА ДОБАВЛЕНИЯ В БАЗУ : ', ex)
-            return False
-
-    def build_distance_matrix_with_index(templates):
-        """
-        Строит матрицу расстояний с использованием индекса.
-        """
-        n = len(templates)
-        distances = np.zeros((n, n))  # Инициализируем матрицу расстояний
-
-        # Создаем индекс для всех шаблонов
-        index = recognizer.create_index(templates, 1)
-        # print(n)
-        for i in range(n):
-            # Ищем ближайших соседей для каждого шаблона
-            nearest = recognizer.search([templates[i]], index, k=n)[0]
-            for neighbor in nearest:
-                distances[i][neighbor.i] = neighbor.match_result.score  # Записываем расстояние
-
-        logger.info(f"Матрица из индекса {distances}")
-        # Матрица расстояний симметрична, поэтому заполняем вторую половину
-        distances = np.minimum(distances, distances.T)
-
-        return distances
-
-    def filter_group_new_clustering(templates, quality_scores):
-        """
-        Метод фильтрации и кластеризации с использованием индекса.
-        """
-        # Строим матрицу расстояний с использованием индекса
-        distances = build_distance_matrix_with_index(templates)
-        # sq_distances = np.power(distances, 2)
-        # distances = cosine_from_euclidean(distances, sq_distances)
-
-        # Создаем матрицу качества
-        quality_scores_matrix = np.minimum.outer(quality_scores, quality_scores)
-
-        # Определяем связи на основе условия
-        condition = (quality_scores_matrix - distances) > 0.1
-        connections = []
-        for i1 in range(condition.shape[0]):
-            for i2 in range(condition.shape[1]):
-                if i1 != i2 and not condition[i1][i2]:
-                    connections.append((i1, i2))
-
-        # Строим граф
-        G = nx.Graph(connections)
-
-        # Находим сообщества
-
-        # Формируем метки
-        communities = nx.algorithms.community.label_propagation_communities(G)
-        labels = [-1] * len(templates)
-        for i, community in enumerate(communities):
-            for s_l in community:
-                labels[s_l] = i
-        return np.array(labels)
-
-    def fetch_data_in_batches(task_id):
-        with get_session() as session:
-            query = (
-                session.query(ImageData)
-                .filter(ImageData.task_id == task_id)
-                .yield_per(100)
-            )
-            for record in query:
-                yield record
-
-    def intra_filtering_graph(embeddings, quality, threshold=0.1, distance_thr=0.4,dists=None):
-        embeddings = np.array(embeddings)
-
-        if dists is None:
-            embeddings = normalize(embeddings)
-            dists = np.inner(embeddings, embeddings)
-
-        qaas = np.minimum.outer(quality, quality)
-        if qaas[0][0] > 2:
-            qaas /= 100
-        conn = (qaas - dists) <= threshold
-
-        N = conn.shape[0]
-        not_equal_mask = ~np.eye(N, dtype=bool)
-        mask = not_equal_mask & conn & (dists > distance_thr)
-        i1_array, i2_array = np.where(mask)
-        connections = [(i, j, {"weight": dists[i, j]}) for i, j in zip(i1_array, i2_array)]
-        G = nx.Graph(connections)
-        communities = nx.algorithms.community.label_propagation_communities(G)
-        group_labels = [-1] * len(embeddings)
-        for i, b in enumerate(communities):
-            for bb in b:
-                group_labels[bb] = i
-
-        return np.array(group_labels)
-
-    templates = []
-    quality_scores_list = []
-    image_id = []
-
-    logger.info("МЕТОД ЗАПУЩЕН")
-    for record in fetch_data_in_batches(task_id):
-        if record.additional_data is None:
-            logger.info(f"Дополнительные данные отсутствуют (None) для записи {record.id}")
-            continue
-
-        # Обработка additional_data
-        if isinstance(record.additional_data, str):
-            try:
-                additional_data = json.loads(record.additional_data)
-                id = record.id
-            except json.JSONDecodeError as e:
-                logger.error(f"Ошибка декодирования JSON для записи {record.id}: {e}")
-                continue
-        elif isinstance(record.additional_data, list):
-            additional_data = record.additional_data
-            id = record.id
-        else:
-            logger.warning(f"Дополнительные данные имеют неожиданный тип: {type(record.additional_data)}")
-            continue
-
-        if not isinstance(additional_data, list):
-            logger.warning(f"Дополнительные данные не являются списком для записи {record.id}")
-            continue
-
-        # Извлечение embeddings и quality_scores
-        for item in additional_data:
-            if "template" in item:
-                # Ищем любой ключ в template, который содержит blob
-                blob = None
-                for key in item["template"]:
-                    if isinstance(item["template"][key], dict) and "blob" in item["template"][key]:
-                        blob = item["template"][key]["blob"]
-                        break
-
-                if blob is None:
-                    logger.info(f"Шаблон не найден для записи {record.id}")
-                    continue
-
-                # Загружаем шаблон из base64
-                idx_unpacking = np.arange(512)
-                idx_unpacking[::2] += 1
-                idx_unpacking[1::2] -= 1
-
-                template = load_template_from_base64(blob)
-                byte_io = BytesIO()
-                template.save(byte_io)
-                template_bin = byte_io.getvalue()[4:]
-                template_bin = BitArray(template_bin)
-                predict_tensor = [template_bin[i * 4:(i + 1) * 4].int for i in idx_unpacking]
-
-                # template = np.frombuffer(base64.b64decode(blob), dtype='uint8').reshape(296)
-                templates.append(predict_tensor)
-                image_id.append(id)
-
-            if "quality" in item:
-                quality_scores_list.append(item["quality"]["total_score"])
-                logger.info(f"Quality: {item["quality"]["total_score"]}")
-
-            # if "confidence" in item:
-            #     quality_scores_list.append(item["confidence"])
-            #     logger.info(f"Confidence: {item['confidence']}")
-            else:
-                logger.info("confidence не найдено")
-
-    # Преобразуем списки в numpy массивы
-    quality_scores_array = np.array(quality_scores_list)
-    print(quality_scores_array)
-
-    # Применяем метод фильтрации
-    if len(quality_scores_array) == 0:
-        print('QUALITY SCORES НЕ НАЙДЕНЫ')
-        quality_scores_array = np.ones(quality_scores_array.shape)
-
-    if len(templates) > 0 and len(quality_scores_array) > 0:
-        templates = np.array(templates)
-
-        euc = pairwise_distances(templates, templates)
-        sq_euc = np.power(euc, 2)
-        cos_from_euc = cosine_from_euclidean(templates, sq_euc)
-        distances = cos_from_euc
-        labels = intra_filtering_graph(templates, quality_scores_array, dists=distances)
-
-        # labels = filter_group_new_clustering(templates, quality_scores_array)
-        from_image_id_to_cluster = dict(zip(image_id, labels))
-
-        result_of_push = push_clusters_to_additional_data(from_image_id_to_cluster)
-        if result_of_push:
-            logger.info(f"Результат кластеризации: {labels}, кластера добавлены в базу")
-        else:
-            logger.info(f"Результат кластеризации: {labels}, кластера НЕ добавлены в базу")
-    else:
-        logger.warning("Нет данных для кластеризации.")
-
-    return f"Запрос обработан успешно labels {labels}"
+# @celery_app.task(name='tasks.quality.clustering', acks_late=True)
+# def process_clustering_task(task_id):
+#
+#     default_dll_path = "lib/libfacerec.so"
+#     face_sdk_3divi_dir = os.getenv('face_sdk_3divi_dir')
+#     service = FacerecService.create_service(
+#         os.path.join(face_sdk_3divi_dir, default_dll_path),
+#         os.path.join(face_sdk_3divi_dir, "conf/facerec")
+#     )
+#
+#     # face_sdk_3divi_dir = "/home/slonyara/3DiVi_FaceSDK/3_24_2"
+#     # default_dll_path = "/home/slonyara/3DiVi_FaceSDK/3_24_2/lib/libfacerec.so"
+#     # service = FacerecService.create_service(
+#     #     dll_path=default_dll_path,
+#     #     facerec_conf_dir="/home/slonyara/3DiVi_FaceSDK/3_24_2/conf/facerec", )
+#
+#     recognizer = service.create_recognizer("recognizer_latest_v1000.xml", True, False, False)
+#
+#     # функция для нормализации эмбеддингов
+#     def cosine_from_euclidean(embeddings, sq_euc) -> np.ndarray:
+#         """
+#         Get pairwise cosine distances from euclidean distances
+#         embedding: int4 matrix of shape (N, C)
+#         sq_euc: matrix of shape (N, N) of precalculated squared euclidean dists
+#         """
+#         zero_point = 0.5
+#         dq_norms = np.linalg.norm(embeddings - zero_point, axis=1)
+#         n1 = dq_norms[:, np.newaxis]
+#         n2 = dq_norms[np.newaxis, :]
+#         return ((n1 ** 2) + (n2 ** 2) - sq_euc) / (2 * n1 * n2)
+#
+#     def load_template_from_base64(blob_str):
+#         """
+#         Загружает шаблон из base64 строки.
+#         """
+#         try:
+#             blob_bytes = base64.b64decode(blob_str)
+#             binary_stream = BytesIO(blob_bytes)
+#             return recognizer.load_template(binary_stream)
+#         except Exception as e:
+#             logger.error(f"Ошибка при загрузке шаблона: {e}")
+#             raise
+#
+#     def push_clusters_to_additional_data(image_id_to_cluster : dict) -> bool:
+#         """
+#         Добавляем номер кластера к additional_data катинки в базе данных
+#         :param image_id_to_cluster: словарь image_id : image_cluster
+#         :return: флаг bool - уалось ли запушить изменения
+#         """
+#         session = sync_session()
+#         try:
+#             for img_id, value in image_id_to_cluster.items():
+#                 image = session.query(ImageData).filter(ImageData.id == img_id).first()
+#                 if image:
+#                     image_data = json.loads(image.additional_data)
+#
+#                     image_data.append(['cluster', str(value)])
+#
+#                     image.additional_data = json.dumps(image_data)
+#
+#             session.commit()
+#             return True
+#         except Exception as ex:
+#             print('ОШИБКА ДОБАВЛЕНИЯ В БАЗУ : ', ex)
+#             return False
+#
+#     def build_distance_matrix_with_index(templates):
+#         """
+#         Строит матрицу расстояний с использованием индекса.
+#         """
+#         n = len(templates)
+#         distances = np.zeros((n, n))  # Инициализируем матрицу расстояний
+#
+#         # Создаем индекс для всех шаблонов
+#         index = recognizer.create_index(templates, 1)
+#         # print(n)
+#         for i in range(n):
+#             # Ищем ближайших соседей для каждого шаблона
+#             nearest = recognizer.search([templates[i]], index, k=n)[0]
+#             for neighbor in nearest:
+#                 distances[i][neighbor.i] = neighbor.match_result.score  # Записываем расстояние
+#
+#         logger.info(f"Матрица из индекса {distances}")
+#         # Матрица расстояний симметрична, поэтому заполняем вторую половину
+#         distances = np.minimum(distances, distances.T)
+#
+#         return distances
+#
+#     def filter_group_new_clustering(templates, quality_scores):
+#         """
+#         Метод фильтрации и кластеризации с использованием индекса.
+#         """
+#         # Строим матрицу расстояний с использованием индекса
+#         distances = build_distance_matrix_with_index(templates)
+#         # sq_distances = np.power(distances, 2)
+#         # distances = cosine_from_euclidean(distances, sq_distances)
+#
+#         # Создаем матрицу качества
+#         quality_scores_matrix = np.minimum.outer(quality_scores, quality_scores)
+#
+#         # Определяем связи на основе условия
+#         condition = (quality_scores_matrix - distances) > 0.1
+#         connections = []
+#         for i1 in range(condition.shape[0]):
+#             for i2 in range(condition.shape[1]):
+#                 if i1 != i2 and not condition[i1][i2]:
+#                     connections.append((i1, i2))
+#
+#         # Строим граф
+#         G = nx.Graph(connections)
+#
+#         # Находим сообщества
+#
+#         # Формируем метки
+#         communities = nx.algorithms.community.label_propagation_communities(G)
+#         labels = [-1] * len(templates)
+#         for i, community in enumerate(communities):
+#             for s_l in community:
+#                 labels[s_l] = i
+#         return np.array(labels)
+#
+#     def fetch_data_in_batches(task_id):
+#         with get_session() as session:
+#             query = (
+#                 session.query(ImageData)
+#                 .filter(ImageData.task_id == task_id)
+#                 .yield_per(100)
+#             )
+#             for record in query:
+#                 yield record
+#
+#     def intra_filtering_graph(embeddings, quality, threshold=0.1, distance_thr=0.4,dists=None):
+#         embeddings = np.array(embeddings)
+#
+#         if dists is None:
+#             embeddings = normalize(embeddings)
+#             dists = np.inner(embeddings, embeddings)
+#
+#         qaas = np.minimum.outer(quality, quality)
+#         if qaas[0][0] > 2:
+#             qaas /= 100
+#         conn = (qaas - dists) <= threshold
+#
+#         N = conn.shape[0]
+#         not_equal_mask = ~np.eye(N, dtype=bool)
+#         mask = not_equal_mask & conn & (dists > distance_thr)
+#         i1_array, i2_array = np.where(mask)
+#         connections = [(i, j, {"weight": dists[i, j]}) for i, j in zip(i1_array, i2_array)]
+#         G = nx.Graph(connections)
+#         communities = nx.algorithms.community.label_propagation_communities(G)
+#         group_labels = [-1] * len(embeddings)
+#         for i, b in enumerate(communities):
+#             for bb in b:
+#                 group_labels[bb] = i
+#
+#         return np.array(group_labels)
+#
+#     templates = []
+#     quality_scores_list = []
+#     image_id = []
+#
+#     logger.info("МЕТОД ЗАПУЩЕН")
+#     for record in fetch_data_in_batches(task_id):
+#         if record.additional_data is None:
+#             logger.info(f"Дополнительные данные отсутствуют (None) для записи {record.id}")
+#             continue
+#
+#         # Обработка additional_data
+#         if isinstance(record.additional_data, str):
+#             try:
+#                 additional_data = json.loads(record.additional_data)
+#                 id = record.id
+#             except json.JSONDecodeError as e:
+#                 logger.error(f"Ошибка декодирования JSON для записи {record.id}: {e}")
+#                 continue
+#         elif isinstance(record.additional_data, list):
+#             additional_data = record.additional_data
+#             id = record.id
+#         else:
+#             logger.warning(f"Дополнительные данные имеют неожиданный тип: {type(record.additional_data)}")
+#             continue
+#
+#         if not isinstance(additional_data, list):
+#             logger.warning(f"Дополнительные данные не являются списком для записи {record.id}")
+#             continue
+#
+#         # Извлечение embeddings и quality_scores
+#         for item in additional_data:
+#             if "template" in item:
+#                 # Ищем любой ключ в template, который содержит blob
+#                 blob = None
+#                 for key in item["template"]:
+#                     if isinstance(item["template"][key], dict) and "blob" in item["template"][key]:
+#                         blob = item["template"][key]["blob"]
+#                         break
+#
+#                 if blob is None:
+#                     logger.info(f"Шаблон не найден для записи {record.id}")
+#                     continue
+#
+#                 # Загружаем шаблон из base64
+#                 idx_unpacking = np.arange(512)
+#                 idx_unpacking[::2] += 1
+#                 idx_unpacking[1::2] -= 1
+#
+#                 template = load_template_from_base64(blob)
+#                 byte_io = BytesIO()
+#                 template.save(byte_io)
+#                 template_bin = byte_io.getvalue()[4:]
+#                 template_bin = BitArray(template_bin)
+#                 predict_tensor = [template_bin[i * 4:(i + 1) * 4].int for i in idx_unpacking]
+#
+#                 # template = np.frombuffer(base64.b64decode(blob), dtype='uint8').reshape(296)
+#                 templates.append(predict_tensor)
+#                 image_id.append(id)
+#
+#             if "quality" in item:
+#                 quality_scores_list.append(item["quality"]["total_score"])
+#                 logger.info(f"Quality: {item["quality"]["total_score"]}")
+#
+#             # if "confidence" in item:
+#             #     quality_scores_list.append(item["confidence"])
+#             #     logger.info(f"Confidence: {item['confidence']}")
+#             else:
+#                 logger.info("confidence не найдено")
+#
+#     # Преобразуем списки в numpy массивы
+#     quality_scores_array = np.array(quality_scores_list)
+#     print(quality_scores_array)
+#
+#     # Применяем метод фильтрации
+#     if len(quality_scores_array) == 0:
+#         print('QUALITY SCORES НЕ НАЙДЕНЫ')
+#         quality_scores_array = np.ones(quality_scores_array.shape)
+#
+#     if len(templates) > 0 and len(quality_scores_array) > 0:
+#         templates = np.array(templates)
+#
+#         euc = pairwise_distances(templates, templates)
+#         sq_euc = np.power(euc, 2)
+#         cos_from_euc = cosine_from_euclidean(templates, sq_euc)
+#         distances = cos_from_euc
+#         labels = intra_filtering_graph(templates, quality_scores_array, dists=distances)
+#
+#         # labels = filter_group_new_clustering(templates, quality_scores_array)
+#         from_image_id_to_cluster = dict(zip(image_id, labels))
+#
+#         result_of_push = push_clusters_to_additional_data(from_image_id_to_cluster)
+#         if result_of_push:
+#             logger.info(f"Результат кластеризации: {labels}, кластера добавлены в базу")
+#         else:
+#             logger.info(f"Результат кластеризации: {labels}, кластера НЕ добавлены в базу")
+#     else:
+#         logger.warning("Нет данных для кластеризации.")
+#
+#     return f"Запрос обработан успешно labels {labels}"
 
 
 
